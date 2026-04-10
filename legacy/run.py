@@ -1,8 +1,8 @@
 import os
 import json
 import argparse
-import openai
 from legacy.agent import AnalysisAgent
+from cellvoyager.llm_utils import get_openai_api_key, has_openai_compatible_config
 
 
 def main():
@@ -24,7 +24,7 @@ def main():
     # Optional arguments with defaults
     parser.add_argument("--model-name", 
                        default="o3-mini",
-                       help="OpenAI model name to use (default: o3-mini)")
+                       help="OpenAI-compatible model name to use (default: o3-mini)")
     
     parser.add_argument("--num-analyses", 
                        type=int, 
@@ -72,11 +72,11 @@ def main():
     
     args = parser.parse_args()
     
-    # Check if OpenAI API key is available
-    openai_api_key = os.getenv('OPENAI_API_KEY')
-    if not openai_api_key:
-        print("❌ Error: OPENAI_API_KEY environment variable not set")
-        print("Please set your OpenAI API key: export OPENAI_API_KEY='your-key-here'")
+    # Check if OpenAI-compatible config is available
+    openai_api_key = get_openai_api_key()
+    if not has_openai_compatible_config(api_key=openai_api_key):
+        print("❌ Error: OpenAI-compatible configuration required")
+        print("Set OPENAI_API_KEY, or point OPENAI_BASE_URL / OPENAI_API_BASE at a local OpenAI-compatible server")
         return 1
     
     # Check if required files exist

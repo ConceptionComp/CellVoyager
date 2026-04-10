@@ -1,4 +1,3 @@
-import openai
 import os
 import json
 import nbformat as nbf
@@ -15,6 +14,7 @@ import shutil
 from jupyter_client import KernelManager
 from nbformat.v4 import new_code_cell, new_output
 from cellvoyager.deepresearch import DeepResearcher
+from cellvoyager.llm_utils import create_json_chat_completion, create_openai_client, parse_json_response_text
 from cellvoyager.utils import get_documentation
 
 AVAILABLE_PACKAGES = "scanpy, anndata, matplotlib, numpy, seaborn, pandas, scipy"
@@ -41,7 +41,7 @@ class AnalysisAgent:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.output_dir = os.path.join(output_home, "outputs", f"{analysis_name}_{timestamp}")
         
-        self.client = openai.OpenAI(api_key=openai_api_key)
+        self.client = create_openai_client(api_key=openai_api_key)
         
         # Initialize code memory to track the last few cells of code
         self.code_memory = []
@@ -213,13 +213,13 @@ class AnalysisAgent:
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "Initial Analysis")
         
-        response = self.client.chat.completions.create(
+        response = create_json_chat_completion(
+            self.client,
             model=self.model_name,
             messages=[
                 {"role": "system", "content": self.coding_system_prompt},
                 {"role": "user", "content": prompt}
             ],
-            response_format={"type": "json_object"}
         )
         result = response.choices[0].message.content
         
@@ -228,10 +228,10 @@ class AnalysisAgent:
             print(f"⚠️ API returned None response in generate_initial_analysis")
             print(f"   Model: {self.model_name}")
             print(f"   Response object: {response}")
-            raise ValueError("OpenAI API returned None response for initial analysis")
+            raise ValueError("Model API returned None response for initial analysis")
         
         try:
-            analysis = json.loads(result)
+            analysis = parse_json_response_text(result)
         except json.JSONDecodeError as e:
             print(f"⚠️ JSON decode error in generate_initial_analysis: {e}")
             print(f"   Raw result: {repr(result)}")
@@ -294,13 +294,13 @@ class AnalysisAgent:
         max_retries = 2
         for attempt in range(max_retries + 1):
             try:
-                response = self.client.chat.completions.create(
+                response = create_json_chat_completion(
+                    self.client,
                     model=self.model_name,
                     messages=[
                         {"role": "system", "content": self.coding_system_prompt},
                         {"role": "user", "content": prompt}
                     ],
-                    response_format={"type": "json_object"}
                 )
                 result = response.choices[0].message.content
 
@@ -310,11 +310,11 @@ class AnalysisAgent:
                     print(f"   Model: {self.model_name}")
                     print(f"   Response object: {response}")
                     if attempt == max_retries:
-                        raise ValueError("OpenAI API returned None response for next step after all retries")
+                        raise ValueError("Model API returned None response for next step after all retries")
                     continue
                 
                 try:
-                    analysis = json.loads(result)
+                    analysis = parse_json_response_text(result)
                 except json.JSONDecodeError as e:
                     print(f"⚠️ JSON decode error in generate_next_step (attempt {attempt + 1}): {e}")
                     print(f"   Raw result: {repr(result)}")
@@ -414,13 +414,13 @@ class AnalysisAgent:
                                CODING_GUIDELINES=self.coding_guidelines, adata_summary=self.adata_summary,
                                feedback=feedback, jupyter_notebook=jupyter_summary, num_steps_left=num_steps_left)
         
-        response = self.client.chat.completions.create(
+        response = create_json_chat_completion(
+            self.client,
             model=self.model_name,
             messages=[
                 {"role": "system", "content": self.coding_system_prompt},
                 {"role": "user", "content": prompt}
             ],
-            response_format={"type": "json_object"}
         )
         result = response.choices[0].message.content
         
@@ -429,10 +429,10 @@ class AnalysisAgent:
             print(f"⚠️ API returned None response in incorporate_critique")
             print(f"   Model: {self.model_name}")
             print(f"   Response object: {response}")
-            raise ValueError("OpenAI API returned None response for critique incorporation")
+            raise ValueError("Model API returned None response for critique incorporation")
         
         try:
-            modified_analysis = json.loads(result)
+            modified_analysis = parse_json_response_text(result)
         except json.JSONDecodeError as e:
             print(f"⚠️ JSON decode error in incorporate_critique: {e}")
             print(f"   Raw result: {repr(result)}")
@@ -852,13 +852,13 @@ class AnalysisAgent:
             self.logger.log_prompt("user", prompt, "Seeded Hypothesis Analysis")
 
         
-        response = self.client.chat.completions.create(
+        response = create_json_chat_completion(
+            self.client,
             model=self.model_name,
             messages=[
                 {"role": "system", "content": self.coding_system_prompt},
                 {"role": "user", "content": prompt}
             ],
-            response_format={"type": "json_object"}
         )
         result = response.choices[0].message.content
         
@@ -867,10 +867,10 @@ class AnalysisAgent:
             print(f"⚠️ API returned None response in generate_analysis_from_hypothesis")
             print(f"   Model: {self.model_name}")
             print(f"   Response object: {response}")
-            raise ValueError("OpenAI API returned None response for hypothesis analysis")
+            raise ValueError("Model API returned None response for hypothesis analysis")
         
         try:
-            analysis = json.loads(result)
+            analysis = parse_json_response_text(result)
         except json.JSONDecodeError as e:
             print(f"⚠️ JSON decode error in generate_analysis_from_hypothesis: {e}")
             print(f"   Raw result: {repr(result)}")
@@ -1132,7 +1132,7 @@ class AnalysisAgent:
                 past_analyses = self.execute_idea(analysis, past_analyses, analysis_idx, seeded = seeded)
                 
             except ValueError as e:
-                if "OpenAI API refused" in str(e) or "OpenAI API returned None" in str(e):
+                if "OpenAI API refused" in str(e) or "Model API returned None" in str(e):
                     print(f"🚫 API refusal/error for Analysis {analysis_idx+1}. Skipping to next analysis.")
                     print(f"   Error: {str(e)}")
                     # Add this analysis as a skipped entry to past_analyses

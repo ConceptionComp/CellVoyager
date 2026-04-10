@@ -19,6 +19,8 @@ from typing import Any
 import markdown as _markdown
 import streamlit as st
 
+from cellvoyager.llm_utils import create_openai_client, has_openai_compatible_config
+
 
 def _launch_resume(output_dir: str, analysis_idx: int, run_to_completion: bool = False) -> None:
     """Launch run_v2 in resume mode for the given analysis. Sets session state and reruns.
@@ -238,7 +240,7 @@ def _extract_agent_summary_from_notebook(nb_path: Path) -> str:
         "Summarize what the analysis has done so far in exactly 2 short bullet points. "
         "Just return the 2 bullet points, nothing else.\n\n" + context
     )
-    # Try Anthropic first, then OpenAI
+    # Try Anthropic first, then OpenAI-compatible
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     if anthropic_key:
         try:
@@ -252,11 +254,9 @@ def _extract_agent_summary_from_notebook(nb_path: Path) -> str:
                 return resp.content[0].text.strip()
         except Exception:
             pass
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if openai_key:
+    if has_openai_compatible_config():
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=openai_key)
+            client = create_openai_client()
             resp = client.chat.completions.create(
                 model="gpt-4o-mini", max_tokens=150,
                 messages=[{"role": "user", "content": prompt}],
@@ -1024,11 +1024,9 @@ def _chat_via_api(messages: list, output_dir: str, analysis_idx: int | None = No
             return None
         except Exception:
             pass
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if openai_key:
+    if has_openai_compatible_config():
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=openai_key)
+            client = create_openai_client()
             api_messages = [{"role": "system", "content": system}]
             for m in messages:
                 api_messages.append({"role": m["role"], "content": m["content"]})

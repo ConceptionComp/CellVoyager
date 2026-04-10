@@ -25,6 +25,15 @@ OPENAI_API_KEY=sk-xxxxxxxxxxxxx
 ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxx
 ```
 
+For local OpenAI-compatible models (for example via Ollama, vLLM, or LM Studio), set:
+
+```
+OPENAI_BASE_URL=http://localhost:11434/v1
+OPENAI_API_KEY=local
+```
+
+`OPENAI_BASE_URL` works for hypothesis generation and for `--execution-mode legacy` or `--execution-mode opencode`. Claude execution still requires `ANTHROPIC_API_KEY`.
+
 # Usage
 
 ## GUI (Recommended)
@@ -55,8 +64,8 @@ It also simulatenously builds a Jupyter notebook in your `outputs/` folder.
 | Interactive mode | Pauses at every N steps (specified below the checkbox) for user feedback; recommended to have on |
 | Notify | Plays a notification sound when the agent is ready for user feedback |
 | DeepResearch | Whether or not to call OpenAI's DeepResearch agent to get additional biological background prior to idea generation |
-| Execution model | Select from the options which LLM to use for all code generation (if using custom; use LiteLLM naming convention) |
-| Hypothesis generation model | Select from the options which LLM to use for hypothesis generation |
+| Execution model | Select from the options which LLM to use for all code generation |
+| Hypothesis generation model | Select the Anthropic or OpenAI-compatible LLM to use for hypothesis generation |
 
 ### GUI Interactive Screen
 
@@ -85,13 +94,46 @@ python run_cellvoyager.py --h5ad-path PATH_TO_H5AD_DATASET \
 | `--h5ad-path` | Path to the anndata `.h5ad` file |
 | `--paper-path` | Path to a `.txt` file containing a summary of the paper / biological context |
 | `--analysis-name` | Name for the analysis output directory |
-| `--execution-mode` | `claude` (default) or `legacy` |
+| `--execution-mode` | `claude` (default), `legacy`, or `opencode` |
 | `--model-name` | LLM for hypothesis generation (default: `claude-sonnet-4-6`) |
 | `--num-analyses` | Number of analyses to run (default: 1) |
 | `--max-iterations` | Max iterations per analysis (default: 8) |
 | `--interactive` | Pause after each step so you can edit the notebook in Jupyter |
+| `--log-prompts` | Log full prompt/response bodies; all runs also write an analysis trace file under `logs/` |
 
 Run `python run_cellvoyager.py --help` for the full list of options.
+
+Each run writes two log files under `logs/` by default:
+
+- `<analysis_name>_log_<timestamp>.log`: human-readable prompt/output log
+- `<analysis_name>_trace_<timestamp>.log`: chronological analysis trace with planner revisions, executor/tool events, and result summaries
+
+To use a local OpenAI-compatible model for planning and legacy execution:
+
+```bash
+export OPENAI_BASE_URL=http://localhost:11434/v1
+export OPENAI_API_KEY=local
+python run_cellvoyager.py --execution-mode legacy \
+                          --model-name llama3.1 \
+                          --h5ad-path PATH_TO_H5AD_DATASET \
+                          --paper-path PATH_TO_PAPER_SUMMARY \
+                          --analysis-name RUN_NAME
+```
+
+To use a local OpenAI-compatible model for both planning and the live notebook executor:
+
+```bash
+export OPENAI_BASE_URL=http://localhost:1234/v1
+export OPENAI_API_KEY=local
+python run_cellvoyager.py --execution-mode opencode \
+                          --model-name google/gemma-4-26b-a4b \
+                          --execution-model google/gemma-4-26b-a4b \
+                          --h5ad-path PATH_TO_H5AD_DATASET \
+                          --paper-path PATH_TO_PAPER_SUMMARY \
+                          --analysis-name RUN_NAME
+```
+
+`opencode` is CLI-first and uses an OpenAI-compatible model to emit notebook actions directly. Resume mode still only supports `claude` execution.
 
 The agent will work in a live Jupyter notebook and the user can interact with the agent via the terminal (if `--interactive` is enabled).
 

@@ -2,47 +2,67 @@
 Hypothesis generation module.
 Extracted from agent.py - Phase 1: Idea Generation.
 """
+import json
 import os
-import instructor
-import litellm
+import re
+
+import anthropic
 from pydantic import BaseModel
+
+from cellvoyager.llm_utils import create_openai_client, get_model_provider
 from cellvoyager.utils import get_documentation
-
-litellm.drop_params = True  # ignore unsupported params per-model silently
-
-# Instructor client wrapping LiteLLM — handles retries, validation, and structured output
-# for all OpenAI and Anthropic models uniformly.
-_instructor_client = instructor.from_litellm(litellm.completion)
 
 
 _MODEL_ALIASES = {
-    "gpt-5.3": "openai/gpt-5.3-chat-latest",
-    "gpt-5.2": "openai/gpt-5.2-chat-latest",
-    "kimi-k2": "moonshot/kimi-k2",
-    "kimi-k2.5": "moonshot/kimi-k2.5",
-    "kimi-latest": "moonshot/kimi-latest",
+    "gpt-5.3": "gpt-5.3-chat-latest",
+    "gpt-5.2": "gpt-5.2-chat-latest",
 }
 
 
-def _normalize_model_name(model: str) -> str:
-    """Add provider prefix for litellm if not already present."""
-    if model in _MODEL_ALIASES:
-        return _MODEL_ALIASES[model]
-    if "/" in model:
-        return model  # already has provider prefix
-    if model.startswith("claude-") or model.startswith("anthropic"):
-        return model  # litellm auto-detects Anthropic models
-    # Moonshot/Kimi models — LiteLLM uses moonshot/ prefix, env: MOONSHOT_API_KEY
-    if model.startswith(("kimi-", "moonshot-v1")):
-        return f"moonshot/{model}"
-    # Known auto-detected OpenAI models
-    _auto_detected = {"gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-3.5-turbo", "o1", "o3-mini", "o3", "o4-mini"}
-    if model in _auto_detected:
-        return model
-    # For newer OpenAI models add the prefix
-    if model.startswith(("gpt-", "o1-", "o3-", "o4-")):
-        return f"openai/{model}"
-    return model
+def _resolve_provider_and_model(model: str) -> tuple[str, str]:
+    """Resolve the target provider and bare model name."""
+    normalized_model = _MODEL_ALIASES.get(model, model)
+    provider = get_model_provider(normalized_model)
+
+    if normalized_model.startswith("anthropic/"):
+        return "anthropic", normalized_model.split("/", 1)[1]
+    if normalized_model.startswith("openai/"):
+        return "openai", normalized_model.split("/", 1)[1]
+
+    if provider in {"anthropic", "openai"}:
+        return provider, normalized_model
+    return "openai", normalized_model
+
+
+def _to_anthropic_kwargs(model_name: str, messages: list[dict], max_tokens: int = 4096) -> dict:
+    system_parts = []
+    anthropic_messages = []
+
+    for message in messages:
+        role = message["role"]
+        content = message["content"]
+        if role == "system":
+            system_parts.append(content)
+        elif role in {"user", "assistant"}:
+            anthropic_messages.append({"role": role, "content": content})
+
+    kwargs = {
+        "model": model_name,
+        "messages": anthropic_messages,
+        "max_tokens": max_tokens,
+    }
+    if system_parts:
+        kwargs["system"] = "\n\n".join(system_parts)
+    return kwargs
+
+
+def _anthropic_text(response) -> str:
+    parts = []
+    for block in getattr(response, "content", []) or []:
+        text = getattr(block, "text", None)
+        if isinstance(text, str) and text:
+            parts.append(text)
+    return "\n".join(parts).strip()
 
 
 class AnalysisPlan(BaseModel):
@@ -51,6 +71,47 @@ class AnalysisPlan(BaseModel):
     first_step_code: str
     code_description: str = ""
     summary: str = ""
+
+
+_ANALYSIS_PLAN_JSON_SCHEMA = json.dumps(AnalysisPlan.model_json_schema(), ensure_ascii=False, indent=2)
+_ANALYSIS_PLAN_JSON_INSTRUCTION = (
+    "Return only a valid JSON object with no markdown fences or extra commentary. "
+    "The JSON must conform to this schema:\n"
+    f"{_ANALYSIS_PLAN_JSON_SCHEMA}"
+)
+
+
+def _with_json_instruction(messages: list[dict]) -> list[dict]:
+    structured_messages = [dict(message) for message in messages]
+    for message in structured_messages:
+        if message.get("role") == "system":
+            message["content"] = f"{message['content']}\n\n{_ANALYSIS_PLAN_JSON_INSTRUCTION}"
+            return structured_messages
+    return [{"role": "system", "content": _ANALYSIS_PLAN_JSON_INSTRUCTION}, *structured_messages]
+
+
+def _extract_json_text(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+        cleaned = cleaned.strip()
+    if cleaned.startswith("{") and cleaned.endswith("}"):
+        return cleaned
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return cleaned[start : end + 1]
+    raise ValueError("No JSON object found in model response")
+
+
+def _validate_analysis_plan(payload: dict | str) -> dict:
+    if isinstance(payload, str):
+        plan = AnalysisPlan.model_validate_json(payload)
+    else:
+        plan = AnalysisPlan.model_validate(payload)
+    return plan.model_dump()
 
 
 class HypothesisGenerator:
@@ -75,8 +136,7 @@ class HypothesisGenerator:
         log_prompts=False,
         client=None,  # kept for backward compat, unused
     ):
-        # Ensure litellm can route the model — add provider prefix if needed
-        self.model_name = _normalize_model_name(model_name)
+        self.provider, self.model_name = _resolve_provider_and_model(model_name)
         self.prompt_dir = prompt_dir
         self.coding_guidelines = coding_guidelines
         self.coding_system_prompt = coding_system_prompt
@@ -89,19 +149,58 @@ class HypothesisGenerator:
         self.deepresearch_background = deepresearch_background
         self.log_prompts = log_prompts
 
+        if self.provider == "anthropic":
+            anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not anthropic_api_key:
+                raise ValueError("ANTHROPIC_API_KEY is required for Anthropic hypothesis models")
+            self.client = anthropic.Anthropic(api_key=anthropic_api_key)
+        else:
+            self.client = create_openai_client()
+            if not self.client:
+                raise ValueError(
+                    "OpenAI-compatible hypothesis models require OPENAI_API_KEY, "
+                    "or OPENAI_BASE_URL / OPENAI_API_BASE for a local server."
+                )
+
     def _complete_structured(self, messages: list) -> dict:
-        """Call LiteLLM via instructor and return a validated AnalysisPlan dict."""
-        result = _instructor_client.chat.completions.create(
-            model=self.model_name,
-            messages=list(messages),
-            response_model=AnalysisPlan,
-        )
-        return result.model_dump()
+        """Call the configured SDK client and parse a validated AnalysisPlan JSON object."""
+        response_text = self._complete(_with_json_instruction(list(messages)))
+        try:
+            return _validate_analysis_plan(_extract_json_text(response_text))
+        except Exception:
+            repair_prompt = (
+                "Rewrite the following response as valid JSON only, with no markdown fences or extra commentary. "
+                "Do not change the meaning.\n\n"
+                f"Schema:\n{_ANALYSIS_PLAN_JSON_SCHEMA}\n\n"
+                f"Response to repair:\n{response_text}"
+            )
+            repaired_text = self._complete([
+                {"role": "system", "content": "You repair model outputs into valid JSON."},
+                {"role": "user", "content": repair_prompt},
+            ])
+            return _validate_analysis_plan(_extract_json_text(repaired_text))
 
     def _complete(self, messages: list) -> str:
-        """Call LiteLLM for plain-text responses (e.g. critique feedback)."""
-        response = litellm.completion(model=self.model_name, messages=list(messages))
+        """Call the configured SDK client for plain-text responses."""
+        if self.provider == "anthropic":
+            response = self.client.messages.create(**_to_anthropic_kwargs(self.model_name, list(messages)))
+            return _anthropic_text(response)
+
+        response = self.client.chat.completions.create(model=self.model_name, messages=list(messages))
         return response.choices[0].message.content
+
+    def _analysis_trace_payload(self, analysis: dict, **extra) -> dict:
+        plan = analysis.get("analysis_plan", []) or []
+        first_step_code = analysis.get("first_step_code", "") or ""
+        payload = {
+            "hypothesis": analysis.get("hypothesis", ""),
+            "analysis_plan": plan,
+            "num_plan_steps": len(plan),
+            "first_step_code_preview": first_step_code[:1200],
+            "first_step_code_length": len(first_step_code),
+        }
+        payload.update(extra)
+        return payload
 
     def generate_jupyter_summary(self, notebook_cells):
         """Generate a comprehensive summary of notebook cells including source code and outputs (including errors)"""
@@ -129,10 +228,18 @@ class HypothesisGenerator:
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "Initial Analysis")
 
-        return self._complete_structured([
+        self.logger.log_trace(
+            "planner_initial_analysis_start",
+            f"provider={self.provider} model={self.model_name} attempted_analyses_chars={len(attempted_analyses or '')}",
+        )
+
+        analysis = self._complete_structured([
             {"role": "system", "content": self.coding_system_prompt},
             {"role": "user", "content": prompt},
         ])
+
+        self.logger.log_trace_json("planner_initial_analysis_result", self._analysis_trace_payload(analysis))
+        return analysis
 
     def critique_step(self, analysis, past_analyses, notebook_cells, num_steps_left):
         hypothesis = analysis["hypothesis"]
@@ -176,13 +283,19 @@ class HypothesisGenerator:
                 num_steps_left=num_steps_left,
             )
 
-        return self._complete([
+        feedback = self._complete([
             {
                 "role": "system",
                 "content": "You are a single-cell bioinformatics expert providing feedback on code and analysis plan.",
             },
             {"role": "user", "content": prompt},
         ])
+
+        self.logger.log_trace(
+            "planner_critique_feedback",
+            f"num_steps_left={num_steps_left} chars={len(feedback or '')} preview={(feedback or '')[:1200]}",
+        )
+        return feedback
 
     def incorporate_critique(self, analysis, feedback, notebook_cells, num_steps_left):
         hypothesis = analysis["hypothesis"]
@@ -207,17 +320,36 @@ class HypothesisGenerator:
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "Incorporate Critiques")
 
-        return self._complete_structured([
+        self.logger.log_trace(
+            "planner_incorporate_critique_start",
+            f"num_steps_left={num_steps_left} feedback_chars={len(feedback or '')}",
+        )
+
+        revised_analysis = self._complete_structured([
             {"role": "system", "content": self.coding_system_prompt},
             {"role": "user", "content": prompt},
         ])
 
+        self.logger.log_trace_json(
+            "planner_incorporate_critique_result",
+            self._analysis_trace_payload(revised_analysis),
+        )
+        return revised_analysis
+
     def get_feedback(self, analysis, past_analyses, notebook_cells, num_steps_left, iterations=1):
         current_analysis = analysis
         for i in range(iterations):
+            self.logger.log_trace(
+                "planner_feedback_iteration_start",
+                f"iteration={i + 1} num_steps_left={num_steps_left}",
+            )
             feedback = self.critique_step(current_analysis, past_analyses, notebook_cells, num_steps_left)
             current_analysis = self.incorporate_critique(
                 current_analysis, feedback, notebook_cells, num_steps_left
+            )
+            self.logger.log_trace_json(
+                "planner_feedback_iteration_result",
+                self._analysis_trace_payload(current_analysis, iteration=i + 1),
             )
 
         return current_analysis
@@ -242,6 +374,10 @@ class HypothesisGenerator:
 
         # Create the initial analysis plan
         analysis = self.generate_initial_analysis(past_analyses)
+        self.logger.log_trace_json(
+            "planner_generate_idea_initial",
+            self._analysis_trace_payload(analysis, analysis_idx=analysis_idx, seeded=False),
+        )
 
         if analysis_idx is not None:
             step_name = f"{analysis_idx+1}_1"
@@ -260,6 +396,10 @@ class HypothesisGenerator:
         # Get feedback for the initial analysis plan and modify it accordingly
         if self.use_self_critique:
             modified_analysis = self.get_feedback(analysis, past_analyses, None, self.max_iterations)
+            self.logger.log_trace_json(
+                "planner_generate_idea_final",
+                self._analysis_trace_payload(modified_analysis, analysis_idx=analysis_idx, seeded=False),
+            )
 
             if analysis_idx is not None:
                 self.logger.log_response(
@@ -281,6 +421,10 @@ class HypothesisGenerator:
 
             return modified_analysis
         else:
+            self.logger.log_trace_json(
+                "planner_generate_idea_final",
+                self._analysis_trace_payload(analysis, analysis_idx=analysis_idx, seeded=False),
+            )
             if analysis_idx is not None:
                 print("🚫 Skipping feedback on next step (no self-critique)")
                 self.logger.log_response(
@@ -314,6 +458,11 @@ class HypothesisGenerator:
         if self.log_prompts:
             self.logger.log_prompt("user", prompt, "Seeded Hypothesis Analysis")
 
+        self.logger.log_trace(
+            "planner_seeded_hypothesis_start",
+            f"analysis_idx={analysis_idx} hypothesis={(hypothesis or '')[:300]}",
+        )
+
         analysis = self._complete_structured([
             {"role": "system", "content": self.coding_system_prompt},
             {"role": "user", "content": prompt},
@@ -323,6 +472,10 @@ class HypothesisGenerator:
 
         # Ensure the hypothesis matches what was provided
         analysis["hypothesis"] = hypothesis
+        self.logger.log_trace_json(
+            "planner_seeded_hypothesis_final",
+            self._analysis_trace_payload(analysis, analysis_idx=analysis_idx, seeded=True),
+        )
 
         # Log the seeded hypothesis analysis
         if analysis_idx is not None:

@@ -22,6 +22,13 @@ if _project_root not in sys.path:
 import streamlit as st
 
 import gui.common as g
+from cellvoyager.llm_utils import (
+    get_model_provider,
+    get_provider_label,
+    has_any_provider_config,
+    has_openai_compatible_config,
+    has_provider_config,
+)
 
 ROOT = g.ROOT
 UPLOADS_DIR = g.UPLOADS_DIR
@@ -734,9 +741,6 @@ with st.sidebar:
         "o1",
         "gpt-4o",
         "gpt-4o-mini",
-        "kimi-k2.5",
-        "kimi-latest",
-        "moonshot-v1-128k",
         "Custom...",
     ]
     _DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -749,7 +753,7 @@ with st.sidebar:
         _MODEL_PRESETS,
         index=_MODEL_PRESETS.index(_preset_val),
         key="_home_model_preset",
-        help="OpenAI, Anthropic, or Kimi/Moonshot model for hypothesis/critique generation",
+        help="Anthropic or OpenAI-compatible model for hypothesis/critique generation",
     )
     if _selected_preset == "Custom...":
         _custom = st.text_input("Custom model name", value=_current_model if _preset_val == "Custom..." else "", key="_home_model_custom")
@@ -758,41 +762,23 @@ with st.sidebar:
         st.session_state["home_model_name"] = _selected_preset
 
     _model_for_validation = st.session_state.get("home_model_name", _DEFAULT_MODEL)
-    def _model_provider(m):
-        if m.startswith("claude-") or m.startswith("anthropic/"):
-            return "anthropic"
-        if m.startswith("gpt-") or m.startswith("o1") or m.startswith("o3") or m.startswith("o4"):
-            return "openai"
-        if m.startswith("kimi-") or m.startswith("moonshot-") or m.startswith("moonshot/"):
-            return "moonshot"
-        return "unknown"
-    _provider = _model_provider(_model_for_validation)
+    _provider = get_model_provider(_model_for_validation)
 
     st.divider()
     api_keys_ok = True
-    if _provider == "openai":
-        if not os.getenv("OPENAI_API_KEY"):
-            st.error("OPENAI_API_KEY not set")
-            api_keys_ok = False
-        else:
-            st.caption(f"Using OpenAI model `{_model_for_validation}`")
-    elif _provider == "anthropic":
-        if not os.getenv("ANTHROPIC_API_KEY"):
-            st.error("ANTHROPIC_API_KEY not set")
-            api_keys_ok = False
-        else:
-            st.caption(f"Using Anthropic model `{_model_for_validation}`")
-    elif _provider == "moonshot":
-        if not os.getenv("MOONSHOT_API_KEY"):
-            st.error("MOONSHOT_API_KEY not set")
-            api_keys_ok = False
-        else:
-            st.caption(f"Using Kimi/Moonshot model `{_model_for_validation}`")
-    else:
+    if _provider == "unknown":
         st.warning(f"Unknown provider for `{_model_for_validation}`. Ensure the correct API key is set.")
-        if not os.getenv("OPENAI_API_KEY") and not os.getenv("ANTHROPIC_API_KEY") and not os.getenv("MOONSHOT_API_KEY"):
-            st.error("No API keys set (OPENAI_API_KEY, ANTHROPIC_API_KEY, or MOONSHOT_API_KEY)")
+        if not has_any_provider_config():
+            st.error("No provider configured (OPENAI_API_KEY/OPENAI_BASE_URL or ANTHROPIC_API_KEY)")
             api_keys_ok = False
+    elif not has_provider_config(_provider):
+        if _provider == "openai":
+            st.error("OPENAI_API_KEY or OPENAI_BASE_URL not set")
+        else:
+            st.error("ANTHROPIC_API_KEY not set")
+        api_keys_ok = False
+    else:
+        st.caption(f"Using {get_provider_label(_provider)} model `{_model_for_validation}`")
     if not os.getenv("ANTHROPIC_API_KEY"):
         st.error("ANTHROPIC_API_KEY not set (required for Claude execution agent)")
         api_keys_ok = False
@@ -977,18 +963,8 @@ context_source: structured_fields
     _execution_model = st.session_state.get("home_execution_model", "claude-sonnet-4-6")
     _h5ad_path = str(FIXED_H5AD_PATH) if DEMO_MODE else st.session_state.get("home_h5ad_path")
     # Claude execution agent always needs ANTHROPIC_API_KEY; hypothesis model needs its own key
-    def __model_provider(m):
-        if m.startswith("claude-") or m.startswith("anthropic/"):
-            return "anthropic"
-        if m.startswith("kimi-") or m.startswith("moonshot-") or m.startswith("moonshot/"):
-            return "moonshot"
-        return "openai"
-    _hyp_provider = __model_provider(_model_name)
-    _hyp_key_ok = (
-        bool(os.getenv("OPENAI_API_KEY")) if _hyp_provider == "openai"
-        else bool(os.getenv("MOONSHOT_API_KEY")) if _hyp_provider == "moonshot"
-        else bool(os.getenv("ANTHROPIC_API_KEY"))
-    )
+    _hyp_provider = get_model_provider(_model_name)
+    _hyp_key_ok = has_provider_config(_hyp_provider) if _hyp_provider != "unknown" else has_openai_compatible_config()
     _api_ok = _hyp_key_ok and bool(os.getenv("ANTHROPIC_API_KEY"))
     _has_h5ad = _h5ad_path and Path(_h5ad_path).exists()
     if context_source == "Structured fields":

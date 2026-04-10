@@ -28,3 +28,4 @@ CellBench_2/
 caseStudies_paperSummaries/
 tests/
 website/
+*.h5ad

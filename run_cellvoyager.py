@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 from dotenv import load_dotenv
 from cellvoyager.agent import AnalysisAgentV2
+from cellvoyager.llm_utils import get_openai_api_key, has_openai_compatible_config
 
 load_dotenv()
 
@@ -34,10 +35,11 @@ def main():
     # Execution module selection
     parser.add_argument(
         "--execution-mode",
-        choices=["legacy", "claude"],
+        choices=["legacy", "claude", "opencode"],
         default="claude",
         help="Execution module: 'legacy' = IdeaExecutor (programmatic kernel), "
-        "'claude' = ClaudeJupyterExecutor (live Jupyter + Claude Agent SDK) (default: legacy)",
+        "'claude' = ClaudeJupyterExecutor (live Jupyter + Claude Agent SDK), "
+        "'opencode' = OpenAI-compatible live notebook agent (default: claude)",
     )
     parser.add_argument(
         "--anthropic-api-key",
@@ -72,12 +74,12 @@ def main():
     parser.add_argument(
         "--model-name",
         default="claude-sonnet-4-6",
-        help="LLM model for hypothesis generation — OpenAI, Anthropic, or Kimi/Moonshot (e.g. o3-mini, gpt-4o, claude-sonnet-4-5, kimi-k2.5). Default: claude-sonnet-4-6",
+        help="LLM model for hypothesis generation — OpenAI-compatible or Anthropic (e.g. o3-mini, gpt-4o, claude-sonnet-4-5). Default: claude-sonnet-4-6",
     )
     parser.add_argument(
         "--execution-model",
         default=None,
-        help="Anthropic model for the Claude execution agent (e.g. claude-sonnet-4-6, claude-opus-4-6). Defaults to the Claude Code CLI default.",
+        help="Model for the selected execution agent. Claude mode expects an Anthropic model; opencode mode expects an OpenAI-compatible model. Defaults to --model-name or the Claude CLI default.",
     )
     parser.add_argument(
         "--num-analyses",
@@ -137,7 +139,7 @@ def main():
     parser.add_argument(
         "--log-prompts",
         action="store_true",
-        help="Enable prompt logging",
+        help="Enable full prompt/body logging in addition to the default analysis trace file",
     )
     parser.add_argument(
         "--deepresearch",
@@ -181,14 +183,16 @@ def main():
 
     args = parser.parse_args()
 
-    # OpenAI API key — required for legacy execution mode and deep research,
-    # optional for claude execution mode.
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    needs_openai = (args.execution_mode != "claude") or args.deepresearch
-    if needs_openai and not openai_api_key:
+    openai_api_key = get_openai_api_key()
+
+    if args.execution_mode != "claude" and not has_openai_compatible_config(api_key=openai_api_key):
+        print(f"❌ Error: OpenAI-compatible configuration required for --execution-mode {args.execution_mode}")
+        print("Set OPENAI_API_KEY, or point OPENAI_BASE_URL / OPENAI_API_BASE at a local OpenAI-compatible server")
+        return 1
+
+    if args.deepresearch and not os.getenv("OPENAI_API_KEY"):
         print("❌ Error: OPENAI_API_KEY environment variable not set")
-        print("Please set your OpenAI API key: export OPENAI_API_KEY='your-key-here'")
-        print("(Not required when using --execution-mode claude without --deepresearch)")
+        print("Please set your OpenAI API key for --deepresearch")
         return 1
 
     # Resume mode: handle separately before normal validation
@@ -294,7 +298,7 @@ def main():
 
     # Execution kwargs for Claude mode
     execution_kwargs = {}
-    if args.execution_mode == "claude":
+    if args.execution_mode in {"claude", "opencode"}:
         execution_kwargs = {
             "jupyter_port": args.jupyter_port,
             "jupyter_token": args.jupyter_token,

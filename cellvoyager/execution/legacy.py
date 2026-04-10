@@ -10,6 +10,7 @@ import datetime
 import nbformat as nbf
 from nbformat.v4 import new_code_cell, new_output
 from jupyter_client import KernelManager
+from cellvoyager.llm_utils import create_json_chat_completion, parse_json_response_text
 from cellvoyager.utils import get_documentation
 
 AVAILABLE_PACKAGES = "scanpy, anndata, matplotlib, numpy, seaborn, pandas, scipy"
@@ -133,24 +134,24 @@ class IdeaExecutor:
         max_retries = 2
         for attempt in range(max_retries + 1):
             try:
-                response = self.client.chat.completions.create(
+                response = create_json_chat_completion(
+                    self.client,
                     model=self.model_name,
                     messages=[
                         {"role": "system", "content": self.coding_system_prompt},
                         {"role": "user", "content": prompt},
                     ],
-                    response_format={"type": "json_object"},
                 )
                 result = response.choices[0].message.content
 
                 if result is None:
                     print(f"⚠️ API returned None response in generate_next_step (attempt {attempt + 1})")
                     if attempt == max_retries:
-                        raise ValueError("OpenAI API returned None response for next step after all retries")
+                        raise ValueError("Model API returned None response for next step after all retries")
                     continue
 
                 try:
-                    analysis = json.loads(result)
+                    analysis = parse_json_response_text(result)
                 except json.JSONDecodeError as e:
                     print(f"⚠️ JSON decode error in generate_next_step (attempt {attempt + 1}): {e}")
                     if attempt == max_retries:

@@ -29,6 +29,8 @@ from nbformat.v4 import (
 )
 from jupyter_client import KernelManager
 
+from cellvoyager.llm_utils import create_openai_client, has_openai_compatible_config
+
 
 # -----------------------------------------------------------------------------
 # Small helpers
@@ -639,11 +641,9 @@ def run_mcp_server() -> None:
                         return resp.content[0].text.strip()
                 except Exception:
                     pass
-            openai_key = os.environ.get("OPENAI_API_KEY")
-            if openai_key:
+            if has_openai_compatible_config():
                 try:
-                    from openai import OpenAI
-                    client = OpenAI(api_key=openai_key)
+                    client = create_openai_client()
                     resp = client.chat.completions.create(
                         model="gpt-4o-mini", max_tokens=150,
                         messages=[{"role": "user", "content": prompt}],
@@ -1284,7 +1284,11 @@ class ClaudeJupyterExecutor(CellVoyagerClaudeRunner):
                  coding_guidelines, analysis_name, anthropic_api_key,
                  max_iterations=8, max_turns=60, interactive_mode=False, intervene_every=1,
                  execution_model=None, **kwargs):
-        log_file = getattr(logger, "log_file", str(Path(output_dir) / "claude_execution.log"))
+        log_file = getattr(
+            logger,
+            "trace_file",
+            getattr(logger, "log_file", str(Path(output_dir) / "claude_execution.log")),
+        )
         super().__init__(
             output_dir=output_dir,
             h5ad_path=h5ad_path,

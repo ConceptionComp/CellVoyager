@@ -7,13 +7,13 @@ import os
 import datetime
 import pandas as pd
 import numpy as np
-import openai
 import h5py
 from h5py import Dataset, Group
 
 import anndata
 
 from cellvoyager.hypothesis import HypothesisGenerator
+from cellvoyager.llm_utils import create_openai_client
 from cellvoyager.execution.legacy import IdeaExecutor
 from cellvoyager.logger import Logger
 from cellvoyager.deepresearch import DeepResearcher
@@ -71,7 +71,7 @@ class AnalysisAgentV2:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             self.output_dir = os.path.join(output_home, "outputs", f"{analysis_name}_{timestamp}")
 
-        self.client = openai.OpenAI(api_key=openai_api_key) if openai_api_key else None
+        self.client = create_openai_client(api_key=openai_api_key)
 
         self.use_self_critique = use_self_critique
         self.use_VLM = use_VLM
@@ -174,6 +174,12 @@ class AnalysisAgentV2:
             self.executor = ClaudeJupyterExecutor(
                 **shared_executor_kwargs,
                 anthropic_api_key=anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY"),
+                **execution_kwargs,
+            )
+        elif execution_mode == "opencode":
+            from cellvoyager.execution.opencode import OpenCodeJupyterExecutor
+            self.executor = OpenCodeJupyterExecutor(
+                **shared_executor_kwargs,
                 **execution_kwargs,
             )
         else:
@@ -374,6 +380,14 @@ class AnalysisAgentV2:
             seeded_hypotheses: Optional list of hypothesis strings for AI to develop into full analyses.
         """
         past_analyses = ""
+        self.logger.log_trace_json(
+            "agent_run_start",
+            {
+                "analysis_name": self.analysis_name,
+                "num_analyses": self.num_analyses,
+                "max_iterations": self.max_iterations,
+            },
+        )
 
         for analysis_idx in range(self.num_analyses):
             seeded_hypothesis, seeded = None, False
@@ -383,6 +397,10 @@ class AnalysisAgentV2:
                 seeded = True
 
             try:
+                self.logger.log_trace(
+                    "agent_analysis_start",
+                    f"analysis_idx={analysis_idx} seeded={seeded}",
+                )
                 # Phase 1: Idea Generation (hypothesis.py)
                 analysis = self.hypothesis_generator.generate_idea(
                     past_analyses, analysis_idx, seeded_hypothesis
@@ -392,6 +410,10 @@ class AnalysisAgentV2:
                 # Phase 2: Idea Execution
                 past_analyses = self.executor.execute_idea(
                     analysis, past_analyses, analysis_idx, seeded=seeded
+                )
+                self.logger.log_trace(
+                    "agent_analysis_complete",
+                    f"analysis_idx={analysis_idx} past_analyses_chars={len(past_analyses or '')}",
                 )
                 print(f"✅ Completed Analysis {analysis_idx+1}")
 
@@ -424,9 +446,13 @@ class AnalysisAgentV2:
                         break
 
             except ValueError as e:
-                if "OpenAI API refused" in str(e) or "OpenAI API returned None" in str(e):
+                if "OpenAI API refused" in str(e) or "Model API returned None" in str(e):
                     print(f"🚫 API refusal/error for Analysis {analysis_idx+1}. Skipping to next analysis.")
                     print(f"   Error: {str(e)}")
+                    self.logger.log_trace(
+                        "agent_analysis_skipped",
+                        f"analysis_idx={analysis_idx} error={str(e)}",
+                    )
                     past_analyses += f"Analysis {analysis_idx+1}: Skipped due to API refusal/error.\n\n"
                     continue
                 else:
@@ -435,6 +461,7 @@ class AnalysisAgentV2:
         # Clean up resources (IdeaExecutor owns the kernel; ClaudeJupyterExecutor manages Jupyter)
         if hasattr(self.executor, "stop_persistent_kernel"):
             self.executor.stop_persistent_kernel()
+        self.logger.log_trace("agent_run_complete", f"analysis_name={self.analysis_name}")
         import gc
         gc.collect()
 
