@@ -6,6 +6,7 @@ import os
 import re
 import json
 import base64
+import copy
 import datetime
 import nbformat as nbf
 from nbformat.v4 import new_code_cell, new_output
@@ -562,6 +563,24 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
 
         return notebook
 
+    def _snapshot_dir(self):
+        snapshot_dir = os.path.join(self.output_dir, "snapshots")
+        os.makedirs(snapshot_dir, exist_ok=True)
+        return snapshot_dir
+
+    def save_notebook_snapshot(self, notebook, analysis_idx, step_idx, label):
+        """Save a full notebook snapshot for in-progress inspection."""
+        snapshot_dir = self._snapshot_dir()
+        snapshot_path = os.path.join(
+            snapshot_dir,
+            f"{self.analysis_name}_analysis_{analysis_idx+1}_step_{step_idx:02d}_{label}.ipynb",
+        )
+        notebook_copy = copy.deepcopy(notebook)
+        with open(snapshot_path, "w", encoding="utf-8") as f:
+            nbf.write(self.cleanup_notebook_outputs(notebook_copy), f)
+        print(f"💾 Snapshot saved: {snapshot_path}")
+        return snapshot_path
+
     def execute_idea(self, analysis, past_analyses, analysis_idx, seeded=False):
         """
         Phase 2: Idea Execution
@@ -578,6 +597,12 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
 
         def namer(analysis_idx, step_idx):
             return f"{analysis_idx+1}_{step_idx}"
+
+        def short_step_text(text, limit=90):
+            cleaned = " ".join(str(text or "").split())
+            if len(cleaned) <= limit:
+                return cleaned
+            return cleaned[: limit - 3].rstrip() + "..."
 
         hypotheses_analysis = []
         self.code_memory = []
@@ -606,17 +631,26 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
 
         current_code = strip_code_markers(current_code)
         notebook.cells.append(new_code_cell(current_code))
+        self.save_notebook_snapshot(notebook, analysis_idx, 0, "setup")
 
         for iteration in range(self.max_iterations):
-            step_name = namer(analysis_idx, iteration + 1)
+            step_idx = iteration + 1
+            step_name = namer(analysis_idx, step_idx)
+            step_title = (
+                analysis_plan[0] if analysis_plan else f"Step {step_idx}"
+            )
+            print(
+                f"▶️ Running step {step_idx}/{self.max_iterations}: {short_step_text(step_title)}"
+            )
             success, error_msg, notebook = self.run_last_cell(notebook)
-            print(f"🚀 Beginning step {iteration + 1}...")
+            self.save_notebook_snapshot(notebook, analysis_idx, step_idx, "after_run")
 
             if success:
                 self.logger.log_response(
-                    f"STEP {iteration + 1} RAN SUCCESSFULLY - Analysis {analysis_idx+1}",
+                    f"STEP {step_idx} RAN SUCCESSFULLY - Analysis {analysis_idx+1}",
                     f"step_execution_success_{step_name}",
                 )
+                print("🧪 Interpreting step results...")
                 results_interpretation = self.interpret_results(
                     notebook, past_analyses, hypothesis, analysis_plan, current_code
                 )
@@ -625,11 +659,12 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                     f"### Agent Interpretation\n\n{results_interpretation}"
                 )
                 notebook.cells.append(interpretation_cell)
+                self.save_notebook_snapshot(notebook, analysis_idx, step_idx, "after_interpretation")
 
             else:
                 print(f"⚠️ Code errored with: {error_msg}")
                 self.logger.log_response(
-                    f"STEP {iteration + 1} FAILED - Analysis {analysis_idx+1}\n\nCode:\n```python\n{current_code}\n\n Error:\n{error_msg}```",
+                    f"STEP {step_idx} FAILED - Analysis {analysis_idx+1}\n\nCode:\n```python\n{current_code}\n\n Error:\n{error_msg}```",
                     f"step_execution_failed_{step_name}",
                 )
                 fix_attempt, fix_successful = 0, False
@@ -651,12 +686,15 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                     notebook.cells[-1] = nbf.v4.new_code_cell(current_code)
 
                     success, error_msg, notebook = self.run_last_cell(notebook)
+                    self.save_notebook_snapshot(
+                        notebook, analysis_idx, step_idx, f"after_fix_attempt_{fix_attempt}"
+                    )
 
                     if success:
                         fix_successful = True
                         print(f"  ✅ Fix successful on attempt {fix_attempt}")
                         self.logger.log_response(
-                            f"FIX SUCCESSFUL on attempt {fix_attempt}/{self.max_fix_attempts} - Analysis {analysis_idx+1}, Step {iteration + 2}",
+                            f"FIX SUCCESSFUL on attempt {fix_attempt}/{self.max_fix_attempts} - Analysis {analysis_idx+1}, Step {step_idx}",
                             f"fix_attempt_success_{step_name}_{fix_attempt}",
                         )
                         updated_description = self.generate_code_description(current_code)
@@ -669,6 +707,7 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                             ):
                                 cell.source = f"## {updated_description}"
                                 break
+                        print("🧪 Interpreting step results...")
                         results_interpretation = self.interpret_results(
                             notebook, past_analyses, hypothesis, analysis_plan, current_code
                         )
@@ -679,11 +718,14 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                             f"### Agent Interpretation\n\n{results_interpretation}"
                         )
                         notebook.cells.append(interpretation_cell)
+                        self.save_notebook_snapshot(
+                            notebook, analysis_idx, step_idx, "after_interpretation"
+                        )
                         break
                     else:
                         print(f"  ❌ Fix attempt {fix_attempt} failed")
                         self.logger.log_response(
-                            f"FIX ATTEMPT FAILED {fix_attempt}/{self.max_fix_attempts} - Analysis {analysis_idx+1}, Step {iteration + 1}: {error_msg}\n\nCode:\n```python\n{current_code}\n```",
+                            f"FIX ATTEMPT FAILED {fix_attempt}/{self.max_fix_attempts} - Analysis {analysis_idx+1}, Step {step_idx}: {error_msg}\n\nCode:\n```python\n{current_code}\n```",
                             f"fix_attempt_failed_{step_name}_{fix_attempt}",
                         )
                         if fix_attempt == self.max_fix_attempts:
@@ -691,7 +733,7 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                                 f"  ⚠️ Failed to fix after {self.max_fix_attempts} attempts. Moving to next iteration."
                             )
                             self.logger.log_response(
-                                f"ALL FIX ATTEMPTS EXHAUSTED - Analysis {analysis_idx+1}, Step {iteration + 1}. Failed after {self.max_fix_attempts} attempts.",
+                                f"ALL FIX ATTEMPTS EXHAUSTED - Analysis {analysis_idx+1}, Step {step_idx}. Failed after {self.max_fix_attempts} attempts.",
                                 f"fix_attempt_exhausted_{step_name}",
                             )
                             results_interpretation = (
@@ -701,6 +743,9 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                                 f"### Agent Interpretation\n\n{results_interpretation}"
                             )
                             notebook.cells.append(interpretation_cell)
+                            self.save_notebook_snapshot(
+                                notebook, analysis_idx, step_idx, "after_interpretation"
+                            )
                 if not results_interpretation:
                     results_interpretation = self.interpret_results(
                         notebook, past_analyses, hypothesis, analysis_plan, current_code
@@ -709,6 +754,7 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                         f"### Agent Interpretation\n\n{results_interpretation}"
                     )
                     notebook.cells.append(interpretation_cell)
+                    self.save_notebook_snapshot(notebook, analysis_idx, step_idx, "after_interpretation")
 
             hypotheses_analysis.append(hypothesis)
 
@@ -720,6 +766,7 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                     "analysis_plan": analysis_plan,
                     "first_step_code": current_code,
                 }
+                print("🧭 Generating next step plan...")
                 next_step_analysis = self.generate_next_step_analysis(
                     analysis, past_analyses, notebook.cells, num_steps_left, seeded
                 )
@@ -735,6 +782,7 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                 )
 
                 if self.use_self_critique:
+                    print("🔍 Reviewing next step plan...")
                     modified_analysis = self.hypothesis_generator.get_feedback(
                         next_step_analysis, past_analyses, notebook.cells, num_steps_left
                     )
@@ -759,10 +807,12 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                     )
                     modified_analysis = next_step_analysis
 
-                print(
-                    f"ANALYSIS PLAN AFTER NEXT STEP GENERATION AND AFTER CRITIQUE (length: {len(modified_analysis['analysis_plan'])}):",
-                    modified_analysis["analysis_plan"],
+                next_title = (
+                    modified_analysis["analysis_plan"][0]
+                    if modified_analysis["analysis_plan"]
+                    else "No additional analysis steps generated"
                 )
+                print(f"➡️ Next step ready: {short_step_text(next_title)}")
 
                 steps_text = "\n".join(
                     [f"Step {i+1}: {item}" for i, item in enumerate(modified_analysis["analysis_plan"])]
@@ -774,6 +824,7 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                 modified_code = strip_code_markers(modified_analysis["first_step_code"])
                 notebook.cells.append(new_code_cell(modified_code))
                 current_code = modified_code
+                self.save_notebook_snapshot(notebook, analysis_idx, step_idx, "after_planning")
 
             self.update_code_memory(notebook.cells)
 

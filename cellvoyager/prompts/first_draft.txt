@@ -3,7 +3,10 @@ Your role is to provide a new computational analysis plan that is completely dis
 Propose analyses that you think are missing from the paper. Ensure these are standard single-cell analyses.
 Specifically, you will return a hypothesis, a series of analysis steps towards testing that hypothesis, and finally the python code for executing the first analysis step.
 
-Ensure that your output is in the specified JSON format.
+Return exactly one JSON object and nothing else.
+Your final answer must start with `{{` and end with `}}`.
+Do not include markdown fences, prose, bullet points, or visible reasoning.
+Do not add any keys beyond `hypothesis`, `analysis_plan`, `first_step_code`, `code_description`, and `summary`.
 
 {CODING_GUIDELINES}
 

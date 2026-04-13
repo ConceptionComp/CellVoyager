@@ -8,7 +8,10 @@ If it was not adequately addressed, re-try the previous step with an alternate m
 
 CRITICAL: You have at most {num_steps_left} steps remaining. Your analysis plan MUST NOT exceed {num_steps_left} steps. Do not suggest more.
 
-Ensure that your output is in the specified JSON format. 
+Return exactly one JSON object and nothing else.
+Your final answer must start with `{{` and end with `}}`.
+Do not include markdown fences, prose, bullet points, or visible reasoning.
+Do not add any keys beyond `hypothesis`, `analysis_plan`, `first_step_code`, `code_description`, and `summary`.
 
 Original Overall Analysis Hypothesis:
 {hypothesis}

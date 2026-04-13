@@ -11,7 +11,20 @@ def get_model_provider(model: str | None) -> str:
         return "unknown"
     if model.startswith(("claude-", "anthropic/")):
         return "anthropic"
-    if model.startswith(("openai/", "gpt-", "o1", "o3", "o4")):
+    if model.startswith(
+        (
+            "openai/",
+            "google/",
+            "qwen/",
+            "meta-llama/",
+            "deepseek/",
+            "mistralai/",
+            "gpt-",
+            "o1",
+            "o3",
+            "o4",
+        )
+    ):
         return "openai"
     return "unknown"
 

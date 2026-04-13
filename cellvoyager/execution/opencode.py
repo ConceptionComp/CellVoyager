@@ -204,7 +204,7 @@ Rules:
         text = response.choices[0].message.content or ""
         try:
             payload = json.loads(_extract_json_text(text))
-        except Exception:
+        except Exception as e:
             repair_messages = [
                 {
                     "role": "system",
@@ -220,7 +220,12 @@ Rules:
 
         action = payload.get("action")
         if action not in _ACTION_NAMES:
-            raise ValueError(f"Unsupported action: {action!r}")
+            raise ValueError(
+                f"Unsupported action: {action!r}\n"
+                f"Model response: {text[:500]}\n"
+                f"Parsed payload: {payload}\n"
+                f"Expected one of: {sorted(_ACTION_NAMES)}"
+            )
         payload.setdefault("args", {})
         return payload
 

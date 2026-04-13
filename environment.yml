@@ -29,6 +29,7 @@ dependencies:
       - openai
       - anthropic
       - celltypist
+      - markdown
       - streamlit
       - streamlit-extras
       - claude-agent-sdk

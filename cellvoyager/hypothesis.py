@@ -74,10 +74,27 @@ class AnalysisPlan(BaseModel):
 
 
 _ANALYSIS_PLAN_JSON_SCHEMA = json.dumps(AnalysisPlan.model_json_schema(), ensure_ascii=False, indent=2)
+_ANALYSIS_PLAN_JSON_EXAMPLE = json.dumps(
+    {
+        "hypothesis": "Hypothesis text",
+        "analysis_plan": ["Step 1", "Step 2"],
+        "first_step_code": "print('hello')",
+        "code_description": "Short code description",
+        "summary": "Short summary",
+    },
+    ensure_ascii=False,
+    indent=2,
+)
 _ANALYSIS_PLAN_JSON_INSTRUCTION = (
-    "Return only a valid JSON object with no markdown fences or extra commentary. "
+    "Return exactly one valid JSON object. "
+    "Your final answer must start with '{' and end with '}'. "
+    "Do not include markdown fences, prose, bullet points, explanations, or visible reasoning. "
+    "Do not include keys other than hypothesis, analysis_plan, first_step_code, code_description, and summary. "
+    "If you need to think, do it silently and output only the final JSON object. "
     "The JSON must conform to this schema:\n"
-    f"{_ANALYSIS_PLAN_JSON_SCHEMA}"
+    f"{_ANALYSIS_PLAN_JSON_SCHEMA}\n\n"
+    "Example output shape:\n"
+    f"{_ANALYSIS_PLAN_JSON_EXAMPLE}"
 )
 
 
@@ -164,14 +181,30 @@ class HypothesisGenerator:
 
     def _complete_structured(self, messages: list) -> dict:
         """Call the configured SDK client and parse a validated AnalysisPlan JSON object."""
-        response_text = self._complete(_with_json_instruction(list(messages)))
+        structured_messages = _with_json_instruction(list(messages))
+        if self.provider == "anthropic":
+            response_text = self._complete(structured_messages)
+        else:
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=structured_messages,
+                    response_format={"type": "json_object"},
+                )
+                response_text = response.choices[0].message.content or ""
+            except Exception:
+                response_text = self._complete(structured_messages)
         try:
             return _validate_analysis_plan(_extract_json_text(response_text))
         except Exception:
             repair_prompt = (
-                "Rewrite the following response as valid JSON only, with no markdown fences or extra commentary. "
-                "Do not change the meaning.\n\n"
+                "Rewrite the following response as exactly one valid JSON object. "
+                "Your answer must start with '{' and end with '}'. "
+                "Do not include markdown fences, explanations, or visible reasoning. "
+                "Preserve the original meaning.\n\n"
                 f"Schema:\n{_ANALYSIS_PLAN_JSON_SCHEMA}\n\n"
+                "Example output shape:\n"
+                f"{_ANALYSIS_PLAN_JSON_EXAMPLE}\n\n"
                 f"Response to repair:\n{response_text}"
             )
             repaired_text = self._complete([
@@ -215,6 +248,7 @@ class HypothesisGenerator:
         return jupyter_summary
 
     def generate_initial_analysis(self, attempted_analyses):
+        print("📝 Requesting initial analysis plan from model...")
         prompt = open(os.path.join(self.prompt_dir, "first_draft.txt")).read()
         prompt = prompt.format(
             CODING_GUIDELINES=self.coding_guidelines,
@@ -242,6 +276,7 @@ class HypothesisGenerator:
         return analysis
 
     def critique_step(self, analysis, past_analyses, notebook_cells, num_steps_left):
+        print("🔍 Reviewing generated plan...")
         hypothesis = analysis["hypothesis"]
         analysis_plan = analysis["analysis_plan"]
         first_step_code = analysis["first_step_code"]
@@ -298,6 +333,7 @@ class HypothesisGenerator:
         return feedback
 
     def incorporate_critique(self, analysis, feedback, notebook_cells, num_steps_left):
+        print("🛠 Revising plan from critique...")
         hypothesis = analysis["hypothesis"]
         analysis_plan = analysis["analysis_plan"]
         first_step_code = analysis["first_step_code"]
@@ -339,6 +375,8 @@ class HypothesisGenerator:
     def get_feedback(self, analysis, past_analyses, notebook_cells, num_steps_left, iterations=1):
         current_analysis = analysis
         for i in range(iterations):
+            if iterations > 1:
+                print(f"🔄 Self-critique pass {i + 1}/{iterations}...")
             self.logger.log_trace(
                 "planner_feedback_iteration_start",
                 f"iteration={i + 1} num_steps_left={num_steps_left}",
@@ -368,6 +406,7 @@ class HypothesisGenerator:
         """
         if seeded_hypothesis is not None:
             print(f"🌱 Using seeded hypothesis: {seeded_hypothesis}")
+            print("📝 Requesting seeded analysis plan from model...")
             return self.generate_analysis_from_hypothesis(seeded_hypothesis, past_analyses, analysis_idx)
 
         print("🧠 Generating new analysis idea...")
@@ -463,6 +502,7 @@ class HypothesisGenerator:
             f"analysis_idx={analysis_idx} hypothesis={(hypothesis or '')[:300]}",
         )
 
+        print("📝 Requesting seeded analysis plan from model...")
         analysis = self._complete_structured([
             {"role": "system", "content": self.coding_system_prompt},
             {"role": "user", "content": prompt},

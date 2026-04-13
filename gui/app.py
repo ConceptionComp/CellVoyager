@@ -717,6 +717,8 @@ with st.sidebar:
         "claude-sonnet-4-5",
         "claude-opus-4-5",
         "claude-haiku-4-5",
+        "google/gemma-4-26b-a4b",
+        "qwen/qwen3.5-35b-a3b",
     ]
     _DEFAULT_EXEC_MODEL = "claude-sonnet-4-6"
     if st.session_state.get("home_execution_model") not in _EXEC_MODEL_OPTIONS:
@@ -735,6 +737,8 @@ with st.sidebar:
         "claude-sonnet-4-5",
         "claude-opus-4-5",
         "claude-haiku-4-5",
+        "google/gemma-4-26b-a4b",
+        "qwen/qwen3.5-35b-a3b",
         "gpt-5.2",
         "gpt-5.3",
         "o3-mini",
