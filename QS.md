@@ -61,6 +61,14 @@ python run_cellvoyager.py \
  --h5ad-path example/HFTA_v2_germ_XX.h5ad \
  --paper-path example/covid19_summary.txt \
  --analysis-name local_test
+
+python run_cellvoyager.py \
+  --execution-mode legacy \
+ --model-name gemini-2.5-pro\
+ --h5ad-path example/HFTA_v2_germ_XX.h5ad \
+ --paper-path example/covid19_summary.txt \
+ --analysis-name local_test
+
 ```
 
 (I'm not sure this is working yet)
