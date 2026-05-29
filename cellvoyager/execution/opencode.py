@@ -18,7 +18,7 @@ import nbformat as nbf
 from nbformat.v4 import new_code_cell, new_markdown_cell, new_notebook
 
 from cellvoyager.execution.claude import FileLogger, NotebookSession, strip_code_fences
-from cellvoyager.llm_utils import create_openai_client
+from cellvoyager.llm_utils import create_gemini_client, create_openai_client, get_model_provider
 
 
 _ACTION_NAMES = {
@@ -97,7 +97,7 @@ class OpenCodeJupyterExecutor:
         self.execution_model = execution_model or model_name
         self.interactive_mode = interactive_mode
         self.intervene_every = intervene_every
-        self.client = client or create_openai_client()
+        self.client = client or create_openai_client() or create_gemini_client()
         if not self.client:
             raise ValueError(
                 "OpenAI-compatible configuration is required for execution_mode=opencode"

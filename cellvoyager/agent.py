@@ -13,12 +13,12 @@ from h5py import Dataset, Group
 import anndata
 
 from cellvoyager.hypothesis import HypothesisGenerator
-from cellvoyager.llm_utils import create_openai_client
+from cellvoyager.llm_utils import create_gemini_client, create_openai_client, get_model_provider
 from cellvoyager.execution.legacy import IdeaExecutor
 from cellvoyager.logger import Logger
 from cellvoyager.deepresearch import DeepResearcher
 
-AVAILABLE_PACKAGES = "scanpy, anndata, matplotlib, numpy, seaborn, pandas, scipy"
+AVAILABLE_PACKAGES = "scanpy, anndata, matplotlib, numpy, seaborn, pandas, scipy, harmonypy, bbknn"
 
 
 class AnalysisAgentV2:
@@ -71,7 +71,10 @@ class AnalysisAgentV2:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             self.output_dir = os.path.join(output_home, "outputs", f"{analysis_name}_{timestamp}")
 
-        self.client = create_openai_client(api_key=openai_api_key)
+        if get_model_provider(model_name) == "gemini":
+            self.client = create_gemini_client()
+        else:
+            self.client = create_openai_client(api_key=openai_api_key)
 
         self.use_self_critique = use_self_critique
         self.use_VLM = use_VLM

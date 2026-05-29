@@ -737,6 +737,8 @@ with st.sidebar:
         "claude-sonnet-4-5",
         "claude-opus-4-5",
         "claude-haiku-4-5",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
         "google/gemma-4-26b-a4b",
         "qwen/qwen3.5-35b-a3b",
         "gpt-5.2",
@@ -778,6 +780,8 @@ with st.sidebar:
     elif not has_provider_config(_provider):
         if _provider == "openai":
             st.error("OPENAI_API_KEY or OPENAI_BASE_URL not set")
+        elif _provider == "gemini":
+            st.error("GEMINI_API_KEY not set")
         else:
             st.error("ANTHROPIC_API_KEY not set")
         api_keys_ok = False

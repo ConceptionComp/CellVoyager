@@ -9,7 +9,7 @@ import re
 import anthropic
 from pydantic import BaseModel
 
-from cellvoyager.llm_utils import create_openai_client, get_model_provider
+from cellvoyager.llm_utils import create_gemini_client, create_openai_client, get_model_provider
 from cellvoyager.utils import get_documentation
 
 
@@ -29,7 +29,7 @@ def _resolve_provider_and_model(model: str) -> tuple[str, str]:
     if normalized_model.startswith("openai/"):
         return "openai", normalized_model.split("/", 1)[1]
 
-    if provider in {"anthropic", "openai"}:
+    if provider in {"anthropic", "openai", "gemini"}:
         return provider, normalized_model
     return "openai", normalized_model
 
@@ -171,6 +171,12 @@ class HypothesisGenerator:
             if not anthropic_api_key:
                 raise ValueError("ANTHROPIC_API_KEY is required for Anthropic hypothesis models")
             self.client = anthropic.Anthropic(api_key=anthropic_api_key)
+        elif self.provider == "gemini":
+            self.client = create_gemini_client()
+            if not self.client:
+                raise ValueError(
+                    "GEMINI_API_KEY is required for Gemini hypothesis models"
+                )
         else:
             self.client = create_openai_client()
             if not self.client:

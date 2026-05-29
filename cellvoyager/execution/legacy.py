@@ -14,7 +14,7 @@ from jupyter_client import KernelManager
 from cellvoyager.llm_utils import create_json_chat_completion, parse_json_response_text
 from cellvoyager.utils import get_documentation
 
-AVAILABLE_PACKAGES = "scanpy, anndata, matplotlib, numpy, seaborn, pandas, scipy"
+AVAILABLE_PACKAGES = "scanpy, anndata, matplotlib, numpy, seaborn, pandas, scipy, harmonypy, bbknn"
 
 
 def strip_code_markers(text):
@@ -257,7 +257,14 @@ class IdeaExecutor:
         response = self.client.chat.completions.create(
             model=self.model_name,
             messages=[
-                {"role": "system", "content": "You are a coding assistant helping to fix code."},
+                {"role": "system", "content": (
+                    "You are a coding assistant helping to fix single-cell transcriptomics code. "
+                    "Key scanpy API rules: "
+                    "(1) sc.tl.dpt() has no 'root' parameter — set adata.uns['iroot'] = <cell_index> before calling it. "
+                    "(2) sc.pl.paga_compare() requires sc.pl.paga(adata) to be called first to populate adata.uns['paga']['pos']. "
+                    "(3) UFuncTypeError on adata.obs columns means the column has numpy structured/record dtype — fix by extracting a plain array with .astype(float) or indexing the field (col['fieldname']) before numeric operations. "
+                    "(4) Provide only fixed code with no explanation."
+                )},
                 {"role": "user", "content": prompt},
             ],
         )
@@ -349,7 +356,7 @@ class IdeaExecutor:
                         continue
 
                 response = self.client.chat.completions.create(
-                    model="gpt-4o",
+                    model=self.model_name,
                     messages=[
                         {
                             "role": "system",

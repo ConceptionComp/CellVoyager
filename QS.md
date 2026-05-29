@@ -31,11 +31,13 @@ Example
 
 - export OPENAI_BASE_URL=http://localhost:11434/v1
 - export OPENAI_API_KEY=local
+- export GEMINI_API_KEY=ASK_FOR_THE_KEY
 - python run_cellvoyager.py --execution-mode legacy --model-name llama3.1 --h5ad-path example/covid19.h5ad --paper-path example/covid19_summary.txt --analysis-name local_test
 
 ```bash
   export ANTHROPIC_BASE_URL=http://localhost:1234
   export ANTHROPIC_API_KEY=sk-no-key-required
+  export GEMINI_API_KEY=ASK_FOR_THE_KEY
 ```
 
 ```bash
@@ -46,9 +48,16 @@ python run_cellvoyager.py \
  --paper-path example/covid19_summary.txt \
  --analysis-name local_test
 
-python run_cellvoyager.py \
+~/miniconda3/envs/CellVoyager/bin/python run_cellvoyager.py \
   --execution-mode legacy \
  --model-name qwen/qwen3.5-35b-a3b\
+ --h5ad-path example/HFTA_v2_germ_XX.h5ad \
+ --paper-path example/covid19_summary.txt \
+ --analysis-name local_test
+
+python run_cellvoyager.py \
+  --execution-mode legacy \
+ --model-name gemini-2.5-flash\
  --h5ad-path example/HFTA_v2_germ_XX.h5ad \
  --paper-path example/covid19_summary.txt \
  --analysis-name local_test
@@ -57,7 +66,7 @@ python run_cellvoyager.py \
 (I'm not sure this is working yet)
 
 ```bash
-/Users/masha/miniconda3/envs/CellVoyager/bin/python run_cellvoyager.py \
+~/miniconda3/envs/CellVoyager/bin/python run_cellvoyager.py \
  --execution-mode opencode \
  --model-name google/gemma-4-26b-a4b --execution-model google/gemma-4-26b-a4b \
  --h5ad-path example/HFTA_v2_germ_XX.h5ad \

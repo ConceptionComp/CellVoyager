@@ -17,7 +17,7 @@ from cellvoyager.deepresearch import DeepResearcher
 from cellvoyager.llm_utils import create_json_chat_completion, create_openai_client, parse_json_response_text
 from cellvoyager.utils import get_documentation
 
-AVAILABLE_PACKAGES = "scanpy, anndata, matplotlib, numpy, seaborn, pandas, scipy"
+AVAILABLE_PACKAGES = "scanpy, anndata, matplotlib, numpy, seaborn, pandas, scipy, harmonypy, bbknn"
 class AnalysisAgent:
     def __init__(self, h5ad_path, paper_summary_path, openai_api_key, model_name, analysis_name, 
                 num_analyses=5, max_iterations=6, prompt_dir=None, output_home=".", log_home=".",

@@ -6,11 +6,16 @@ import re
 
 import openai
 
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+
 def get_model_provider(model: str | None) -> str:
     if not model:
         return "unknown"
     if model.startswith(("claude-", "anthropic/")):
         return "anthropic"
+    if model.startswith("gemini-"):
+        return "gemini"
     if model.startswith(
         (
             "openai/",
@@ -34,6 +39,8 @@ def get_provider_label(provider: str) -> str:
         return "Anthropic"
     if provider == "openai":
         return "OpenAI-compatible"
+    if provider == "gemini":
+        return "Google Gemini"
     return "Unknown"
 
 
@@ -50,6 +57,8 @@ def has_provider_config(provider: str) -> bool:
         return bool(os.getenv("ANTHROPIC_API_KEY"))
     if provider == "openai":
         return has_openai_compatible_config()
+    if provider == "gemini":
+        return bool(os.getenv("GEMINI_API_KEY"))
     return False
 
 
@@ -58,6 +67,7 @@ def has_any_provider_config() -> bool:
         (
             has_openai_compatible_config(),
             bool(os.getenv("ANTHROPIC_API_KEY")),
+            bool(os.getenv("GEMINI_API_KEY")),
         )
     )
 
@@ -70,6 +80,17 @@ def get_openai_api_key(api_key: str | None = None, base_url: str | None = None) 
     if resolved_base_url:
         return "local"
     return None
+
+
+def get_gemini_api_key() -> str | None:
+    return os.getenv("GEMINI_API_KEY") or None
+
+
+def create_gemini_client() -> openai.OpenAI | None:
+    api_key = get_gemini_api_key()
+    if not api_key:
+        return None
+    return openai.OpenAI(api_key=api_key, base_url=GEMINI_BASE_URL)
 
 
 def create_openai_client(api_key: str | None = None, base_url: str | None = None) -> openai.OpenAI | None:

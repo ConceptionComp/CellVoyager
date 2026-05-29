@@ -19,7 +19,7 @@ from typing import Any
 import markdown as _markdown
 import streamlit as st
 
-from cellvoyager.llm_utils import create_openai_client, has_openai_compatible_config
+from cellvoyager.llm_utils import create_gemini_client, create_openai_client, has_openai_compatible_config, has_provider_config
 
 
 def _launch_resume(output_dir: str, analysis_idx: int, run_to_completion: bool = False) -> None:
@@ -259,6 +259,16 @@ def _extract_agent_summary_from_notebook(nb_path: Path) -> str:
             client = create_openai_client()
             resp = client.chat.completions.create(
                 model="gpt-4o-mini", max_tokens=150,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return (resp.choices[0].message.content or "").strip()
+        except Exception:
+            pass
+    if has_provider_config("gemini"):
+        try:
+            client = create_gemini_client()
+            resp = client.chat.completions.create(
+                model="gemini-2.5-flash", max_tokens=150,
                 messages=[{"role": "user", "content": prompt}],
             )
             return (resp.choices[0].message.content or "").strip()
@@ -1032,6 +1042,18 @@ def _chat_via_api(messages: list, output_dir: str, analysis_idx: int | None = No
                 api_messages.append({"role": m["role"], "content": m["content"]})
             resp = client.chat.completions.create(
                 model="gpt-4o-mini", messages=api_messages, max_tokens=1024,
+            )
+            return (resp.choices[0].message.content or "").strip()
+        except Exception:
+            pass
+    if has_provider_config("gemini"):
+        try:
+            client = create_gemini_client()
+            api_messages = [{"role": "system", "content": system}]
+            for m in messages:
+                api_messages.append({"role": m["role"], "content": m["content"]})
+            resp = client.chat.completions.create(
+                model="gemini-2.5-flash", messages=api_messages, max_tokens=1024,
             )
             return (resp.choices[0].message.content or "").strip()
         except Exception:
