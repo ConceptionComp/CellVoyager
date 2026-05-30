@@ -5,6 +5,8 @@
 # Demo
 To try out the CellVoyager UI, check out the [CellVoyager demo](https://cellvoyager.org).
 
+For a full walkthrough of CLI usage, model setup, inputs, outputs, and troubleshooting, see the [User Guide](docs/user-guide.md).
+
 *Note: because of memory constraints, this uses a pre-loaded dataset + dataset summary (the one used for the COVID-19 case study).*
 
 # Installation
