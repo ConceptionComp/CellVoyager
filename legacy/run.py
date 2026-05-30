@@ -66,10 +66,18 @@ def main():
                        action="store_true",
                        help="Disable documentation functionality")
     
-    parser.add_argument("--log-prompts", 
+    parser.add_argument("--log-prompts",
                        action="store_true",
                        help="Enable prompt logging")
-    
+
+    parser.add_argument("--log-responses",
+                       action="store_true",
+                       help="Save each LLM response as an individual .txt file in {output_dir}/responses/")
+
+    parser.add_argument("--interactive",
+                       action="store_true",
+                       help="Pause before each LLM call to review/edit the saved prompt file; implies --log-prompts and --log-responses")
+
     args = parser.parse_args()
     
     # Check if OpenAI-compatible config is available
@@ -116,6 +124,8 @@ def main():
         use_VLM=not args.no_vlm,
         use_documentation=not args.no_documentation,
         log_prompts=args.log_prompts,
+        log_responses=args.log_responses,
+        interactive=args.interactive,
         max_fix_attempts=args.max_fix_attempts
     )
     

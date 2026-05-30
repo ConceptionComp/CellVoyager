@@ -151,6 +151,9 @@ class HypothesisGenerator:
         max_iterations=6,
         deepresearch_background="",
         log_prompts=False,
+        log_responses=False,
+        interactive=False,
+        output_dir=None,
         client=None,  # kept for backward compat, unused
     ):
         self.provider, self.model_name = _resolve_provider_and_model(model_name)
@@ -164,7 +167,10 @@ class HypothesisGenerator:
         self.use_documentation = use_documentation
         self.max_iterations = max_iterations
         self.deepresearch_background = deepresearch_background
-        self.log_prompts = log_prompts
+        self.log_prompts = log_prompts or interactive
+        self.log_responses = log_responses or interactive
+        self.interactive = interactive
+        self.output_dir = output_dir
 
         if self.provider == "anthropic":
             anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -185,7 +191,7 @@ class HypothesisGenerator:
                     "or OPENAI_BASE_URL / OPENAI_API_BASE for a local server."
                 )
 
-    def _complete_structured(self, messages: list) -> dict:
+    def _complete_structured(self, messages: list, _analysis_idx=None, _step=None, _call_type=None) -> dict:
         """Call the configured SDK client and parse a validated AnalysisPlan JSON object."""
         structured_messages = _with_json_instruction(list(messages))
         if self.provider == "anthropic":
@@ -213,10 +219,20 @@ class HypothesisGenerator:
                 f"{_ANALYSIS_PLAN_JSON_EXAMPLE}\n\n"
                 f"Response to repair:\n{response_text}"
             )
+            if self.log_prompts and _analysis_idx is not None:
+                repair_call_type = f"{_call_type}_repair" if _call_type else "repair"
+                path = self._save_prompt(repair_prompt, _analysis_idx, _step or 0, repair_call_type)
+                if self.interactive:
+                    repair_prompt = self._interactive_pause(path)
             repaired_text = self._complete([
                 {"role": "system", "content": "You repair model outputs into valid JSON."},
                 {"role": "user", "content": repair_prompt},
             ])
+            if self.log_responses and _analysis_idx is not None:
+                repair_call_type = f"{_call_type}_repair" if _call_type else "repair"
+                resp_path = self._save_response(repaired_text, _analysis_idx, _step or 0, repair_call_type)
+                if self.interactive:
+                    print(f"[interactive] Response saved: {resp_path}")
             return _validate_analysis_plan(_extract_json_text(repaired_text))
 
     def _complete(self, messages: list) -> str:
@@ -241,6 +257,41 @@ class HypothesisGenerator:
         payload.update(extra)
         return payload
 
+    def _prompt_dir(self):
+        assert self.output_dir, "output_dir must be set to save prompt files"
+        d = os.path.join(self.output_dir, "prompts")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _response_dir(self):
+        assert self.output_dir, "output_dir must be set to save response files"
+        d = os.path.join(self.output_dir, "responses")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _save_prompt(self, prompt, analysis_idx, step, call_type):
+        path = os.path.join(self._prompt_dir(), f"analysis_{analysis_idx}_step{step}_{call_type}.txt")
+        with open(path, "w") as f:
+            f.write(prompt)
+        return path
+
+    def _save_response(self, response, analysis_idx, step, call_type):
+        path = os.path.join(self._response_dir(), f"analysis_{analysis_idx}_step{step}_{call_type}.txt")
+        with open(path, "w") as f:
+            f.write(response or "")
+        return path
+
+    def _interactive_pause(self, prompt_path):
+        print(f"[interactive] Prompt: {prompt_path}")
+        try:
+            input("Press Enter to send (or Ctrl+C to abort)...")
+        except KeyboardInterrupt:
+            print("\n[interactive] Aborted.")
+            raise
+        print("[interactive] Sending prompt, waiting for response...")
+        with open(prompt_path) as f:
+            return f.read()
+
     def generate_jupyter_summary(self, notebook_cells):
         """Generate a comprehensive summary of notebook cells including source code and outputs (including errors)"""
         if notebook_cells is None:
@@ -253,7 +304,7 @@ class HypothesisGenerator:
 
         return jupyter_summary
 
-    def generate_initial_analysis(self, attempted_analyses):
+    def generate_initial_analysis(self, attempted_analyses, analysis_idx=1):
         print("📝 Requesting initial analysis plan from model...")
         prompt = open(os.path.join(self.prompt_dir, "first_draft.txt")).read()
         prompt = prompt.format(
@@ -266,7 +317,9 @@ class HypothesisGenerator:
         )
 
         if self.log_prompts:
-            self.logger.log_prompt("user", prompt, "Initial Analysis")
+            path = self._save_prompt(prompt, analysis_idx, 0, "first_draft")
+            if self.interactive:
+                prompt = self._interactive_pause(path)
 
         self.logger.log_trace(
             "planner_initial_analysis_start",
@@ -276,12 +329,17 @@ class HypothesisGenerator:
         analysis = self._complete_structured([
             {"role": "system", "content": self.coding_system_prompt},
             {"role": "user", "content": prompt},
-        ])
+        ], _analysis_idx=analysis_idx, _step=0, _call_type="first_draft")
+
+        if self.log_responses:
+            resp_path = self._save_response(json.dumps(analysis, indent=2), analysis_idx, 0, "first_draft")
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
 
         self.logger.log_trace_json("planner_initial_analysis_result", self._analysis_trace_payload(analysis))
         return analysis
 
-    def critique_step(self, analysis, past_analyses, notebook_cells, num_steps_left):
+    def critique_step(self, analysis, past_analyses, notebook_cells, num_steps_left, analysis_idx=1, step=0):
         print("🔍 Reviewing generated plan...")
         hypothesis = analysis["hypothesis"]
         analysis_plan = analysis["analysis_plan"]
@@ -324,6 +382,11 @@ class HypothesisGenerator:
                 num_steps_left=num_steps_left,
             )
 
+        if self.log_prompts:
+            path = self._save_prompt(prompt, analysis_idx, step, "critic")
+            if self.interactive:
+                prompt = self._interactive_pause(path)
+
         feedback = self._complete([
             {
                 "role": "system",
@@ -332,13 +395,18 @@ class HypothesisGenerator:
             {"role": "user", "content": prompt},
         ])
 
+        if self.log_responses:
+            resp_path = self._save_response(feedback, analysis_idx, step, "critic")
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
+
         self.logger.log_trace(
             "planner_critique_feedback",
             f"num_steps_left={num_steps_left} chars={len(feedback or '')} preview={(feedback or '')[:1200]}",
         )
         return feedback
 
-    def incorporate_critique(self, analysis, feedback, notebook_cells, num_steps_left):
+    def incorporate_critique(self, analysis, feedback, notebook_cells, num_steps_left, analysis_idx=1, step=0):
         print("🛠 Revising plan from critique...")
         hypothesis = analysis["hypothesis"]
         analysis_plan = analysis["analysis_plan"]
@@ -360,7 +428,9 @@ class HypothesisGenerator:
         )
 
         if self.log_prompts:
-            self.logger.log_prompt("user", prompt, "Incorporate Critiques")
+            path = self._save_prompt(prompt, analysis_idx, step, "incorporate_critique")
+            if self.interactive:
+                prompt = self._interactive_pause(path)
 
         self.logger.log_trace(
             "planner_incorporate_critique_start",
@@ -370,7 +440,12 @@ class HypothesisGenerator:
         revised_analysis = self._complete_structured([
             {"role": "system", "content": self.coding_system_prompt},
             {"role": "user", "content": prompt},
-        ])
+        ], _analysis_idx=analysis_idx, _step=step, _call_type="incorporate_critique")
+
+        if self.log_responses:
+            resp_path = self._save_response(json.dumps(revised_analysis, indent=2), analysis_idx, step, "incorporate_critique")
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
 
         self.logger.log_trace_json(
             "planner_incorporate_critique_result",
@@ -378,7 +453,7 @@ class HypothesisGenerator:
         )
         return revised_analysis
 
-    def get_feedback(self, analysis, past_analyses, notebook_cells, num_steps_left, iterations=1):
+    def get_feedback(self, analysis, past_analyses, notebook_cells, num_steps_left, iterations=1, analysis_idx=1, step=0):
         current_analysis = analysis
         for i in range(iterations):
             if iterations > 1:
@@ -387,9 +462,11 @@ class HypothesisGenerator:
                 "planner_feedback_iteration_start",
                 f"iteration={i + 1} num_steps_left={num_steps_left}",
             )
-            feedback = self.critique_step(current_analysis, past_analyses, notebook_cells, num_steps_left)
+            # Use step * 100 + (i+1) so different execution steps and rounds each get a unique file.
+            file_step = step * 100 + (i + 1)
+            feedback = self.critique_step(current_analysis, past_analyses, notebook_cells, num_steps_left, analysis_idx=analysis_idx, step=file_step)
             current_analysis = self.incorporate_critique(
-                current_analysis, feedback, notebook_cells, num_steps_left
+                current_analysis, feedback, notebook_cells, num_steps_left, analysis_idx=analysis_idx, step=file_step
             )
             self.logger.log_trace_json(
                 "planner_feedback_iteration_result",
@@ -417,8 +494,9 @@ class HypothesisGenerator:
 
         print("🧠 Generating new analysis idea...")
 
+        idx = (analysis_idx + 1) if analysis_idx is not None else 1
         # Create the initial analysis plan
-        analysis = self.generate_initial_analysis(past_analyses)
+        analysis = self.generate_initial_analysis(past_analyses, analysis_idx=idx)
         self.logger.log_trace_json(
             "planner_generate_idea_initial",
             self._analysis_trace_payload(analysis, analysis_idx=analysis_idx, seeded=False),
@@ -440,7 +518,7 @@ class HypothesisGenerator:
 
         # Get feedback for the initial analysis plan and modify it accordingly
         if self.use_self_critique:
-            modified_analysis = self.get_feedback(analysis, past_analyses, None, self.max_iterations)
+            modified_analysis = self.get_feedback(analysis, past_analyses, None, self.max_iterations, analysis_idx=idx)
             self.logger.log_trace_json(
                 "planner_generate_idea_final",
                 self._analysis_trace_payload(modified_analysis, analysis_idx=analysis_idx, seeded=False),
@@ -500,8 +578,11 @@ class HypothesisGenerator:
             paper_summary=self.paper_summary,
         )
 
+        idx = analysis_idx if analysis_idx is not None else 1
         if self.log_prompts:
-            self.logger.log_prompt("user", prompt, "Seeded Hypothesis Analysis")
+            path = self._save_prompt(prompt, idx, 0, "analysis_from_hypothesis")
+            if self.interactive:
+                prompt = self._interactive_pause(path)
 
         self.logger.log_trace(
             "planner_seeded_hypothesis_start",
@@ -512,9 +593,14 @@ class HypothesisGenerator:
         analysis = self._complete_structured([
             {"role": "system", "content": self.coding_system_prompt},
             {"role": "user", "content": prompt},
-        ])
+        ], _analysis_idx=idx, _step=0, _call_type="analysis_from_hypothesis")
 
-        analysis = self.get_feedback(analysis, past_analyses, None, self.max_iterations)
+        if self.log_responses:
+            resp_path = self._save_response(json.dumps(analysis, indent=2), idx, 0, "analysis_from_hypothesis")
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
+
+        analysis = self.get_feedback(analysis, past_analyses, None, self.max_iterations, analysis_idx=idx)
 
         # Ensure the hypothesis matches what was provided
         analysis["hypothesis"] = hypothesis

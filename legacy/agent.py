@@ -19,9 +19,10 @@ from cellvoyager.utils import get_documentation
 
 AVAILABLE_PACKAGES = "scanpy, anndata, matplotlib, numpy, seaborn, pandas, scipy, harmonypy, bbknn"
 class AnalysisAgent:
-    def __init__(self, h5ad_path, paper_summary_path, openai_api_key, model_name, analysis_name, 
+    def __init__(self, h5ad_path, paper_summary_path, openai_api_key, model_name, analysis_name,
                 num_analyses=5, max_iterations=6, prompt_dir=None, output_home=".", log_home=".",
-                use_self_critique=True, use_VLM=True, use_documentation=True, log_prompts = False,
+                use_self_critique=True, use_VLM=True, use_documentation=True, log_prompts=False,
+                log_responses=False, interactive=False,
                 max_fix_attempts=3, use_deepresearch_background=True):
         self.h5ad_path = h5ad_path
         self.paper_summary = open(paper_summary_path).read()
@@ -33,7 +34,9 @@ class AnalysisAgent:
         self.prompt_dir = prompt_dir or os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "cellvoyager", "prompts"
         )
-        self.log_prompts = log_prompts
+        self.log_prompts = log_prompts or interactive
+        self.log_responses = log_responses or interactive
+        self.interactive = interactive
         self.max_fix_attempts = max_fix_attempts
         self.use_deepresearch_background = use_deepresearch_background
         
@@ -204,15 +207,50 @@ class AnalysisAgent:
         print(f"Loaded obs data: {len(df)} rows × {len(df.columns)} columns")
         return df
 
-    def generate_initial_analysis(self, attempted_analyses):
+    def _prompt_dir(self):
+        d = os.path.join(self.output_dir, "prompts")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _response_dir(self):
+        d = os.path.join(self.output_dir, "responses")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _save_prompt(self, prompt, analysis_idx, step, call_type):
+        path = os.path.join(self._prompt_dir(), f"analysis_{analysis_idx}_step{step}_{call_type}.txt")
+        with open(path, "w") as f:
+            f.write(prompt)
+        return path
+
+    def _save_response(self, response, analysis_idx, step, call_type):
+        path = os.path.join(self._response_dir(), f"analysis_{analysis_idx}_step{step}_{call_type}.txt")
+        with open(path, "w") as f:
+            f.write(response or "")
+        return path
+
+    def _interactive_pause(self, prompt_path):
+        print(f"[interactive] Prompt: {prompt_path}")
+        try:
+            input("Press Enter to send (or Ctrl+C to abort)...")
+        except KeyboardInterrupt:
+            print("\n[interactive] Aborted.")
+            raise
+        print("[interactive] Sending prompt, waiting for response...")
+        with open(prompt_path) as f:
+            return f.read()
+
+    def generate_initial_analysis(self, attempted_analyses, analysis_idx=1):
         prompt = open(os.path.join(self.prompt_dir, "first_draft.txt")).read()
         prompt = prompt.format(CODING_GUIDELINES=self.coding_guidelines, adata_summary=self.adata_summary, 
                                past_analyses=attempted_analyses, paper_txt=self.paper_summary,
                                deepresearch_background=self.deepresearch_background if self.use_deepresearch_background else "")
 
         if self.log_prompts:
-            self.logger.log_prompt("user", prompt, "Initial Analysis")
-        
+            path = self._save_prompt(prompt, analysis_idx, 0, "first_draft")
+            if self.interactive:
+                prompt = self._interactive_pause(path)
+
         response = create_json_chat_completion(
             self.client,
             model=self.model_name,
@@ -222,21 +260,25 @@ class AnalysisAgent:
             ],
         )
         result = response.choices[0].message.content
-        
-        # Debug logging for API response issues
+
         if result is None:
             print(f"⚠️ API returned None response in generate_initial_analysis")
             print(f"   Model: {self.model_name}")
             print(f"   Response object: {response}")
             raise ValueError("Model API returned None response for initial analysis")
-        
+
         try:
             analysis = parse_json_response_text(result)
         except json.JSONDecodeError as e:
             print(f"⚠️ JSON decode error in generate_initial_analysis: {e}")
             print(f"   Raw result: {repr(result)}")
             raise
-        
+
+        if self.log_responses:
+            resp_path = self._save_response(json.dumps(analysis, indent=2), analysis_idx, 0, "first_draft")
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
+
         return analysis
     
     def update_code_memory(self, notebook_cells):
@@ -262,17 +304,17 @@ class AnalysisAgent:
         
         return jupyter_summary
         
-    def generate_next_step_analysis(self, analysis, attempted_analyses, notebook_cells, num_steps_left, seeded):
+    def generate_next_step_analysis(self, analysis, attempted_analyses, notebook_cells, num_steps_left, seeded, analysis_idx=0, step=0):
         hypothesis = analysis["hypothesis"]
         analysis_plan = analysis["analysis_plan"]
         first_step_code = analysis["first_step_code"]
-        
+
         # Update code memory with latest notebook cells
         self.update_code_memory(notebook_cells)
-        
+
         # Generate comprehensive jupyter summary including outputs and errors
         jupyter_summary = self.generate_jupyter_summary(notebook_cells)
-        
+
         # Use the code memory for generating the next step
         recent_code = "\n\n# Next Cell\n".join(reversed(self.code_memory))
 
@@ -290,6 +332,12 @@ class AnalysisAgent:
                                 paper_txt=self.paper_summary, num_steps_left=num_steps_left)
         
         
+        call_type = "next_step_seeded" if seeded else "next_step"
+        if self.log_prompts:
+            path = self._save_prompt(prompt, analysis_idx, step, call_type)
+            if self.interactive:
+                prompt = self._interactive_pause(path)
+
         # Retry logic for generating valid analysis plan
         max_retries = 2
         for attempt in range(max_retries + 1):
@@ -304,7 +352,6 @@ class AnalysisAgent:
                 )
                 result = response.choices[0].message.content
 
-                # Debug logging for API response issues
                 if result is None:
                     print(f"⚠️ API returned None response in generate_next_step (attempt {attempt + 1})")
                     print(f"   Model: {self.model_name}")
@@ -312,7 +359,12 @@ class AnalysisAgent:
                     if attempt == max_retries:
                         raise ValueError("Model API returned None response for next step after all retries")
                     continue
-                
+
+                if self.log_responses:
+                    resp_path = self._save_response(result, analysis_idx, step, call_type)
+                    if self.interactive:
+                        print(f"[interactive] Response saved: {resp_path}")
+
                 try:
                     analysis = parse_json_response_text(result)
                 except json.JSONDecodeError as e:
@@ -365,7 +417,7 @@ class AnalysisAgent:
         
         return analysis
 
-    def critique_step(self, analysis, past_analyses, notebook_cells, num_steps_left):
+    def critique_step(self, analysis, past_analyses, notebook_cells, num_steps_left, analysis_idx=1, step=0):
         hypothesis = analysis["hypothesis"]
         analysis_plan = analysis["analysis_plan"]
         first_step_code = analysis["first_step_code"]
@@ -390,6 +442,11 @@ class AnalysisAgent:
                                 CODING_GUIDELINES=self.coding_guidelines, adata_summary=self.adata_summary, past_analyses=past_analyses,
                                 paper_txt=self.paper_summary, jupyter_notebook=jupyter_summary, num_steps_left=num_steps_left)
 
+        if self.log_prompts:
+            path = self._save_prompt(prompt, analysis_idx, step, "critic")
+            if self.interactive:
+                prompt = self._interactive_pause(path)
+
         response = self.client.chat.completions.create(
             model=self.model_name,
             messages=[
@@ -398,9 +455,15 @@ class AnalysisAgent:
             ]
         )
         feedback = response.choices[0].message.content
+
+        if self.log_responses:
+            resp_path = self._save_response(feedback, analysis_idx, step, "critic")
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
+
         return feedback
 
-    def incorporate_critique(self, analysis, feedback, notebook_cells, num_steps_left):
+    def incorporate_critique(self, analysis, feedback, notebook_cells, num_steps_left, analysis_idx=1, step=0):
         ## Return analysis object
         hypothesis = analysis["hypothesis"]
         analysis_plan = analysis["analysis_plan"]
@@ -413,7 +476,12 @@ class AnalysisAgent:
         prompt = prompt.format(hypothesis=hypothesis, analysis_plan=analysis_plan, first_step_code=first_step_code,
                                CODING_GUIDELINES=self.coding_guidelines, adata_summary=self.adata_summary,
                                feedback=feedback, jupyter_notebook=jupyter_summary, num_steps_left=num_steps_left)
-        
+
+        if self.log_prompts:
+            path = self._save_prompt(prompt, analysis_idx, step, "incorporate_critique")
+            if self.interactive:
+                prompt = self._interactive_pause(path)
+
         response = create_json_chat_completion(
             self.client,
             model=self.model_name,
@@ -423,14 +491,13 @@ class AnalysisAgent:
             ],
         )
         result = response.choices[0].message.content
-        
-        # Debug logging for API response issues
+
         if result is None:
             print(f"⚠️ API returned None response in incorporate_critique")
             print(f"   Model: {self.model_name}")
             print(f"   Response object: {response}")
             raise ValueError("Model API returned None response for critique incorporation")
-        
+
         try:
             modified_analysis = parse_json_response_text(result)
         except json.JSONDecodeError as e:
@@ -438,12 +505,14 @@ class AnalysisAgent:
             print(f"   Raw result: {repr(result)}")
             raise
 
-        if self.log_prompts:
-            self.logger.log_prompt("user", prompt, "Incorporate Critiques")
+        if self.log_responses:
+            resp_path = self._save_response(json.dumps(modified_analysis, indent=2), analysis_idx, step, "incorporate_critique")
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
 
         return modified_analysis
     
-    def fix_code(self, code, error, other_code="", documentation=""):
+    def fix_code(self, code, error, other_code="", documentation="", analysis_idx=0, step=0, attempt=1):
         """Attempts to fix code that produced an error"""
         
         # Manage context length for fix_code to prevent token limit errors
@@ -505,10 +574,16 @@ class AnalysisAgent:
         {truncated_documentation}"""
         
         # Check prompt length before sending
-        estimated_tokens = len(prompt) // 4  # Rough estimation
-        if estimated_tokens > 50000:  # Conservative limit for fix_code
+        estimated_tokens = len(prompt) // 4
+        if estimated_tokens > 50000:
             print(f"⚠️ Warning: Large fix_code prompt detected ({estimated_tokens} estimated tokens)")
-        
+
+        call_type = f"fix_code_attempt{attempt}"
+        if self.log_prompts:
+            path = self._save_prompt(prompt, analysis_idx, step, call_type)
+            if self.interactive:
+                prompt = self._interactive_pause(path)
+
         response = self.client.chat.completions.create(
             model=self.model_name,
             messages=[
@@ -517,10 +592,15 @@ class AnalysisAgent:
             ]
         )
         fixed_code = response.choices[0].message.content
-        
+
+        if self.log_responses:
+            resp_path = self._save_response(fixed_code, analysis_idx, step, call_type)
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
+
         return fixed_code
 
-    def generate_code_description(self, code, context=""):
+    def generate_code_description(self, code, context="", analysis_idx=0, step=0):
         """Generate a description for a code cell based on its content"""
         prompt = f"""Generate 1-2 sentences describing the goal of the code, what it is doing, and why.
 
@@ -529,7 +609,12 @@ class AnalysisAgent:
         {code}
         ```
         """
-        
+
+        if self.log_prompts:
+            path = self._save_prompt(prompt, analysis_idx, step, "code_description")
+            if self.interactive:
+                prompt = self._interactive_pause(path)
+
         response = self.client.chat.completions.create(
             model=self.model_name,
             messages=[
@@ -537,10 +622,15 @@ class AnalysisAgent:
                 {"role": "user", "content": prompt}
             ]
         )
-        
-        return response.choices[0].message.content.strip()
 
-    def interpret_results(self, notebook, past_analyses, hypothesis, analysis_plan, code):
+        result = response.choices[0].message.content.strip()
+        if self.log_responses:
+            resp_path = self._save_response(result, analysis_idx, step, "code_description")
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
+        return result
+
+    def interpret_results(self, notebook, past_analyses, hypothesis, analysis_plan, code, analysis_idx=0, step=0):
         # Get the last cell
         last_cell = notebook.cells[-1]
         no_interpretation = "No results found"
@@ -598,6 +688,11 @@ class AnalysisAgent:
                                CODING_GUIDELINES=self.coding_guidelines, past_analyses=past_analyses,
                                hypothesis=hypothesis, analysis_plan=analysis_plan, code=code)
 
+        if self.log_prompts:
+            path = self._save_prompt(prompt, analysis_idx, step, "interpret_results")
+            if self.interactive:
+                prompt = self._interactive_pause(path)
+
         if self.use_VLM:
             user_content = []
             user_content.append({"type": "text", "text": prompt})
@@ -630,8 +725,6 @@ class AnalysisAgent:
                     ]
                 )
                 feedback = response.choices[0].message.content
-                if self.log_prompts:
-                    self.logger.log_prompt("user", text_output, "Results Interpretation")
             finally:
                 # Clean up image data to prevent memory leaks
                 image_outputs.clear()
@@ -647,16 +740,20 @@ class AnalysisAgent:
                 ]
             )
             feedback = response.choices[0].message.content
-            if self.log_prompts:
-                self.logger.log_prompt("user", text_output, "Results Interpretation")
-            
+
+        if self.log_responses:
+            resp_path = self._save_response(feedback, analysis_idx, step, "interpret_results")
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
+
         return feedback
     
-    def get_feedback(self, analysis, past_analyses, notebook_cells, num_steps_left, iterations=1):
+    def get_feedback(self, analysis, past_analyses, notebook_cells, num_steps_left, iterations=1, analysis_idx=1, step=0):
         current_analysis = analysis
         for i in range(iterations):
-            feedback = self.critique_step(current_analysis, past_analyses, notebook_cells, num_steps_left)
-            current_analysis = self.incorporate_critique(current_analysis, feedback, notebook_cells, num_steps_left)
+            file_step = step * 100 + (i + 1)
+            feedback = self.critique_step(current_analysis, past_analyses, notebook_cells, num_steps_left, analysis_idx=analysis_idx, step=file_step)
+            current_analysis = self.incorporate_critique(current_analysis, feedback, notebook_cells, num_steps_left, analysis_idx=analysis_idx, step=file_step)
 
         return current_analysis
 
@@ -793,21 +890,22 @@ class AnalysisAgent:
             
         print("🧠 Generating new analysis idea...")
         
+        idx = (analysis_idx + 1) if analysis_idx is not None else 1
         # Create the initial analysis plan
-        analysis = self.generate_initial_analysis(past_analyses)
-        
+        analysis = self.generate_initial_analysis(past_analyses, analysis_idx=idx)
+
         if analysis_idx is not None:
             step_name = f"{analysis_idx+1}_1"
-            hypothesis = analysis["hypothesis"]                
+            hypothesis = analysis["hypothesis"]
             analysis_plan = analysis["analysis_plan"]
             initial_code = analysis["first_step_code"]
-            
+
             # Log only the output of the analysis
             self.logger.log_response(f"Hypothesis: {hypothesis}\n\nAnalysis Plan:\n" + "\n".join([f"{i+1}. {step}" for i, step in enumerate(analysis_plan)]) + f"\n\nInitial Code:\n{initial_code}", f"initial_analysis_{step_name}")
-        
+
         # Get feedback for the initial analysis plan and modify it accordingly
         if self.use_self_critique:
-            modified_analysis = self.get_feedback(analysis, past_analyses, None, self.max_iterations)
+            modified_analysis = self.get_feedback(analysis, past_analyses, None, self.max_iterations, analysis_idx=idx)
             
             if analysis_idx is not None:
                 self.logger.log_response(f"APPLIED INITIAL SELF-CRITIQUE - Analysis {analysis_idx+1}", f"self_critique_{step_name}")
@@ -848,10 +946,12 @@ class AnalysisAgent:
 
 
 
+        idx = (analysis_idx + 1) if analysis_idx is not None else 1
         if self.log_prompts:
-            self.logger.log_prompt("user", prompt, "Seeded Hypothesis Analysis")
+            path = self._save_prompt(prompt, idx, 0, "analysis_from_hypothesis")
+            if self.interactive:
+                prompt = self._interactive_pause(path)
 
-        
         response = create_json_chat_completion(
             self.client,
             model=self.model_name,
@@ -861,14 +961,13 @@ class AnalysisAgent:
             ],
         )
         result = response.choices[0].message.content
-        
-        # Debug logging for API response issues
+
         if result is None:
             print(f"⚠️ API returned None response in generate_analysis_from_hypothesis")
             print(f"   Model: {self.model_name}")
             print(f"   Response object: {response}")
             raise ValueError("Model API returned None response for hypothesis analysis")
-        
+
         try:
             analysis = parse_json_response_text(result)
         except json.JSONDecodeError as e:
@@ -876,7 +975,12 @@ class AnalysisAgent:
             print(f"   Raw result: {repr(result)}")
             raise
 
-        analysis = self.get_feedback(analysis, past_analyses, None, self.max_iterations)
+        if self.log_responses:
+            resp_path = self._save_response(json.dumps(analysis, indent=2), idx, 0, "analysis_from_hypothesis")
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
+
+        analysis = self.get_feedback(analysis, past_analyses, None, self.max_iterations, analysis_idx=idx)
         
         # Ensure the hypothesis matches what was provided
         analysis["hypothesis"] = hypothesis
@@ -955,7 +1059,10 @@ class AnalysisAgent:
 
             if success:
                 self.logger.log_response(f"STEP {iteration + 1} RAN SUCCESSFULLY - Analysis {analysis_idx+1}", f"step_execution_success_{step_name}")
-                results_interpretation = self.interpret_results(notebook, past_analyses, hypothesis, analysis_plan, current_code)
+                results_interpretation = self.interpret_results(
+                    notebook, past_analyses, hypothesis, analysis_plan, current_code,
+                    analysis_idx=analysis_idx + 1, step=iteration + 1,
+                )
                 # Log the interpretation
                 self.logger.log_response(results_interpretation, f"results_interpretation_{step_name}")
                 # Add interpretation as a markdown cell
@@ -980,7 +1087,10 @@ class AnalysisAgent:
                             print(f"⚠️ Documentation extraction failed: {e}")
                             documentation = ""
                     
-                    current_code = self.fix_code(current_code, error_msg, documentation=documentation)
+                    current_code = self.fix_code(
+                        current_code, error_msg, documentation=documentation,
+                        analysis_idx=analysis_idx + 1, step=iteration + 1, attempt=fix_attempt,
+                    )
                     current_code = strip_code_markers(current_code)
                     notebook.cells[-1] = nbf.v4.new_code_cell(current_code)
 
@@ -994,7 +1104,9 @@ class AnalysisAgent:
                         self.logger.log_response(f"FIX SUCCESSFUL on attempt {fix_attempt}/{self.max_fix_attempts} - Analysis {analysis_idx+1}, Step {iteration + 2}", f"fix_attempt_success_{step_name}_{fix_attempt}")
                         
                         # Generate updated code description for the fixed code
-                        updated_description = self.generate_code_description(current_code)
+                        updated_description = self.generate_code_description(
+                            current_code, analysis_idx=analysis_idx + 1, step=iteration + 1,
+                        )
                         
                         # Update the previous markdown cell with the corrected description
                         # Find the last markdown cell that contains a code description (starts with "##")
@@ -1005,7 +1117,10 @@ class AnalysisAgent:
                                 notebook.cells[i].source = f"## {updated_description}"
                                 break
                         
-                        results_interpretation = self.interpret_results(notebook, past_analyses, hypothesis, analysis_plan, current_code)
+                        results_interpretation = self.interpret_results(
+                            notebook, past_analyses, hypothesis, analysis_plan, current_code,
+                            analysis_idx=analysis_idx + 1, step=iteration + 1,
+                        )
                         # Log the interpretation
                         self.logger.log_response(results_interpretation, f"results_interpretation_{step_name}")
                         # Add interpretation as a markdown cell
@@ -1029,7 +1144,10 @@ class AnalysisAgent:
                             interpretation_cell = nbf.v4.new_markdown_cell(f"### Agent Interpretation\n\n{results_interpretation}")
                             notebook.cells.append(interpretation_cell)
                 if not results_interpretation:  # Only get interpretation if we haven't set the failure message
-                    results_interpretation = self.interpret_results(notebook, past_analyses, hypothesis, analysis_plan, current_code)
+                    results_interpretation = self.interpret_results(
+                        notebook, past_analyses, hypothesis, analysis_plan, current_code,
+                        analysis_idx=analysis_idx + 1, step=iteration + 1,
+                    )
                     interpretation_cell = nbf.v4.new_markdown_cell(f"### Agent Interpretation\n\n{results_interpretation}")
                     notebook.cells.append(interpretation_cell)
 
@@ -1040,14 +1158,21 @@ class AnalysisAgent:
                 num_steps_left = self.max_iterations - iteration - 1
 
                 analysis = {"hypothesis": hypothesis, "analysis_plan": analysis_plan, "first_step_code": current_code}
-                next_step_analysis = self.generate_next_step_analysis(analysis, past_analyses, notebook.cells, num_steps_left, seeded)
+                next_step_analysis = self.generate_next_step_analysis(
+                    analysis, past_analyses, notebook.cells, num_steps_left, seeded,
+                    analysis_idx=analysis_idx + 1, step=iteration + 1,
+                )
 
                 # Safety check for analysis_plan to prevent IndexError
                 first_step_description = next_step_analysis['analysis_plan'][0] if next_step_analysis['analysis_plan'] else "No additional analysis steps generated"
                 self.logger.log_response(f"NEXT STEP PLAN - Analysis {analysis_idx+1}, Step {iteration + 2}: {first_step_description}\n\nCode:\n```python\n{next_step_analysis['first_step_code']}\n```", f"initial_analysis_{step_name}")
 
                 if self.use_self_critique:
-                    modified_analysis = self.get_feedback(next_step_analysis, past_analyses, notebook.cells, num_steps_left)
+                    modified_analysis = self.get_feedback(
+                        next_step_analysis, past_analyses, notebook.cells, num_steps_left,
+                        analysis_idx=analysis_idx + 1,
+                        step=iteration + 1,
+                    )
                     self.logger.log_response(f"APPLIED SELF-CRITIQUE - Analysis {analysis_idx+1}, Step {iteration + 2}", f"self_critique_{step_name}")
 
                     hypothesis = modified_analysis["hypothesis"]                

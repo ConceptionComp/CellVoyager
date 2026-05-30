@@ -47,6 +47,9 @@ class IdeaExecutor:
         use_self_critique=True,
         use_VLM=True,
         use_documentation=True,
+        log_prompts=False,
+        log_responses=False,
+        interactive=False,
     ):
         self.hypothesis_generator = hypothesis_generator
         self.client = client
@@ -65,6 +68,9 @@ class IdeaExecutor:
         self.use_self_critique = use_self_critique
         self.use_VLM = use_VLM
         self.use_documentation = use_documentation
+        self.log_prompts = log_prompts or interactive
+        self.log_responses = log_responses or interactive
+        self.interactive = interactive
 
         # Code memory for context
         self.code_memory = []
@@ -95,7 +101,7 @@ class IdeaExecutor:
 
         return jupyter_summary
 
-    def generate_next_step_analysis(self, analysis, attempted_analyses, notebook_cells, num_steps_left, seeded):
+    def generate_next_step_analysis(self, analysis, attempted_analyses, notebook_cells, num_steps_left, seeded, analysis_idx=0, step=0):
         hypothesis = analysis["hypothesis"]
         analysis_plan = analysis["analysis_plan"]
         first_step_code = analysis["first_step_code"]
@@ -131,6 +137,12 @@ class IdeaExecutor:
                 num_steps_left=num_steps_left,
             )
 
+        call_type = "next_step_seeded" if seeded else "next_step"
+        if self.log_prompts:
+            path = self._save_prompt(prompt, analysis_idx, step, call_type)
+            if self.interactive:
+                prompt = self._interactive_pause(path)
+
         # Retry logic for generating valid analysis plan
         max_retries = 2
         for attempt in range(max_retries + 1):
@@ -150,6 +162,11 @@ class IdeaExecutor:
                     if attempt == max_retries:
                         raise ValueError("Model API returned None response for next step after all retries")
                     continue
+
+                if self.log_responses:
+                    resp_path = self._save_response(result, analysis_idx, step, call_type)
+                    if self.interactive:
+                        print(f"[interactive] Response saved: {resp_path}")
 
                 try:
                     analysis = parse_json_response_text(result)
@@ -194,7 +211,7 @@ class IdeaExecutor:
 
         return analysis
 
-    def fix_code(self, code, error, other_code="", documentation=""):
+    def fix_code(self, code, error, other_code="", documentation="", analysis_idx=0, step=0, attempt=1):
         """Attempts to fix code that produced an error"""
         max_error_chars = 2000
         max_other_code_chars = 3000
@@ -254,6 +271,12 @@ class IdeaExecutor:
         if estimated_tokens > 50000:
             print(f"⚠️ Warning: Large fix_code prompt detected ({estimated_tokens} estimated tokens)")
 
+        call_type = f"fix_code_attempt{attempt}"
+        if self.log_prompts:
+            path = self._save_prompt(prompt, analysis_idx, step, call_type)
+            if self.interactive:
+                prompt = self._interactive_pause(path)
+
         response = self.client.chat.completions.create(
             model=self.model_name,
             messages=[
@@ -270,9 +293,14 @@ class IdeaExecutor:
         )
         fixed_code = response.choices[0].message.content
 
+        if self.log_responses:
+            resp_path = self._save_response(fixed_code, analysis_idx, step, call_type)
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
+
         return fixed_code
 
-    def generate_code_description(self, code, context=""):
+    def generate_code_description(self, code, context="", analysis_idx=0, step=0):
         """Generate a description for a code cell based on its content"""
         prompt = f"""Generate 1-2 sentences describing the goal of the code, what it is doing, and why.
 
@@ -281,6 +309,11 @@ class IdeaExecutor:
         {code}
         ```
         """
+
+        if self.log_prompts:
+            path = self._save_prompt(prompt, analysis_idx, step, "code_description")
+            if self.interactive:
+                prompt = self._interactive_pause(path)
 
         response = self.client.chat.completions.create(
             model=self.model_name,
@@ -293,9 +326,14 @@ class IdeaExecutor:
             ],
         )
 
-        return response.choices[0].message.content.strip()
+        result = response.choices[0].message.content.strip()
+        if self.log_responses:
+            resp_path = self._save_response(result, analysis_idx, step, "code_description")
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
+        return result
 
-    def interpret_results(self, notebook, past_analyses, hypothesis, analysis_plan, code):
+    def interpret_results(self, notebook, past_analyses, hypothesis, analysis_plan, code, analysis_idx=0, step=0):
         last_cell = notebook.cells[-1]
         no_interpretation = "No results found"
 
@@ -336,6 +374,11 @@ class IdeaExecutor:
             analysis_plan=analysis_plan,
             code=code,
         )
+
+        if self.log_prompts:
+            path = self._save_prompt(prompt, analysis_idx, step, "interpret_results")
+            if self.interactive:
+                prompt = self._interactive_pause(path)
 
         if self.use_VLM:
             user_content = [{"type": "text", "text": prompt}]
@@ -383,6 +426,11 @@ class IdeaExecutor:
                 ],
             )
             feedback = response.choices[0].message.content
+
+        if self.log_responses:
+            resp_path = self._save_response(feedback, analysis_idx, step, "interpret_results")
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
 
         return feedback
 
@@ -575,6 +623,39 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
         os.makedirs(snapshot_dir, exist_ok=True)
         return snapshot_dir
 
+    def _prompt_dir(self):
+        d = os.path.join(self.output_dir, "prompts")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _response_dir(self):
+        d = os.path.join(self.output_dir, "responses")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _save_prompt(self, prompt, analysis_idx, step, call_type):
+        path = os.path.join(self._prompt_dir(), f"analysis_{analysis_idx}_step{step}_{call_type}.txt")
+        with open(path, "w") as f:
+            f.write(prompt)
+        return path
+
+    def _save_response(self, response, analysis_idx, step, call_type):
+        path = os.path.join(self._response_dir(), f"analysis_{analysis_idx}_step{step}_{call_type}.txt")
+        with open(path, "w") as f:
+            f.write(response or "")
+        return path
+
+    def _interactive_pause(self, prompt_path):
+        print(f"[interactive] Prompt: {prompt_path}")
+        try:
+            input("Press Enter to send (or Ctrl+C to abort)...")
+        except KeyboardInterrupt:
+            print("\n[interactive] Aborted.")
+            raise
+        print("[interactive] Sending prompt, waiting for response...")
+        with open(prompt_path) as f:
+            return f.read()
+
     def save_notebook_snapshot(self, notebook, analysis_idx, step_idx, label):
         """Save a full notebook snapshot for in-progress inspection."""
         snapshot_dir = self._snapshot_dir()
@@ -659,7 +740,8 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                 )
                 print("🧪 Interpreting step results...")
                 results_interpretation = self.interpret_results(
-                    notebook, past_analyses, hypothesis, analysis_plan, current_code
+                    notebook, past_analyses, hypothesis, analysis_plan, current_code,
+                    analysis_idx=analysis_idx + 1, step=step_idx,
                 )
                 self.logger.log_response(results_interpretation, f"results_interpretation_{step_name}")
                 interpretation_cell = nbf.v4.new_markdown_cell(
@@ -688,7 +770,10 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                             print(f"⚠️ Documentation extraction failed: {e}")
                             documentation = ""
 
-                    current_code = self.fix_code(current_code, error_msg, documentation=documentation)
+                    current_code = self.fix_code(
+                        current_code, error_msg, documentation=documentation,
+                        analysis_idx=analysis_idx + 1, step=step_idx, attempt=fix_attempt,
+                    )
                     current_code = strip_code_markers(current_code)
                     notebook.cells[-1] = nbf.v4.new_code_cell(current_code)
 
@@ -704,7 +789,9 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                             f"FIX SUCCESSFUL on attempt {fix_attempt}/{self.max_fix_attempts} - Analysis {analysis_idx+1}, Step {step_idx}",
                             f"fix_attempt_success_{step_name}_{fix_attempt}",
                         )
-                        updated_description = self.generate_code_description(current_code)
+                        updated_description = self.generate_code_description(
+                            current_code, analysis_idx=analysis_idx + 1, step=step_idx,
+                        )
                         for i in range(len(notebook.cells) - 1, -1, -1):
                             cell = notebook.cells[i]
                             if (
@@ -716,7 +803,8 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                                 break
                         print("🧪 Interpreting step results...")
                         results_interpretation = self.interpret_results(
-                            notebook, past_analyses, hypothesis, analysis_plan, current_code
+                            notebook, past_analyses, hypothesis, analysis_plan, current_code,
+                            analysis_idx=analysis_idx + 1, step=step_idx,
                         )
                         self.logger.log_response(
                             results_interpretation, f"results_interpretation_{step_name}"
@@ -755,7 +843,8 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                             )
                 if not results_interpretation:
                     results_interpretation = self.interpret_results(
-                        notebook, past_analyses, hypothesis, analysis_plan, current_code
+                        notebook, past_analyses, hypothesis, analysis_plan, current_code,
+                        analysis_idx=analysis_idx + 1, step=step_idx,
                     )
                     interpretation_cell = nbf.v4.new_markdown_cell(
                         f"### Agent Interpretation\n\n{results_interpretation}"
@@ -775,7 +864,8 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                 }
                 print("🧭 Generating next step plan...")
                 next_step_analysis = self.generate_next_step_analysis(
-                    analysis, past_analyses, notebook.cells, num_steps_left, seeded
+                    analysis, past_analyses, notebook.cells, num_steps_left, seeded,
+                    analysis_idx=analysis_idx + 1, step=step_idx,
                 )
 
                 first_step_description = (
@@ -791,7 +881,9 @@ print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
                 if self.use_self_critique:
                     print("🔍 Reviewing next step plan...")
                     modified_analysis = self.hypothesis_generator.get_feedback(
-                        next_step_analysis, past_analyses, notebook.cells, num_steps_left
+                        next_step_analysis, past_analyses, notebook.cells, num_steps_left,
+                        analysis_idx=analysis_idx + 1,
+                        step=step_idx,
                     )
                     self.logger.log_response(
                         f"APPLIED SELF-CRITIQUE - Analysis {analysis_idx+1}, Step {iteration + 2}",

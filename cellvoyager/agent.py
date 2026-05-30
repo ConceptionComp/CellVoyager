@@ -39,6 +39,8 @@ class AnalysisAgentV2:
         use_VLM=True,
         use_documentation=True,
         log_prompts=False,
+        log_responses=False,
+        interactive=False,
         max_fix_attempts=3,
         use_deepresearch_background=True,
         execution_mode="legacy",
@@ -61,7 +63,12 @@ class AnalysisAgentV2:
         self.max_iterations = max_iterations
         self.num_analyses = num_analyses
         self.prompt_dir = prompt_dir or os.path.join(os.path.dirname(__file__), "prompts")
-        self.log_prompts = log_prompts
+        # interactive here means "file-based prompt editing" — only meaningful in legacy mode.
+        # Claude/OpenCode modes pass interactive via execution_kwargs as interactive_mode.
+        _file_interactive = interactive and execution_mode == "legacy"
+        self.log_prompts = log_prompts or _file_interactive
+        self.log_responses = log_responses or _file_interactive
+        self.interactive = _file_interactive
         self.max_fix_attempts = max_fix_attempts
         self.use_deepresearch_background = use_deepresearch_background
 
@@ -149,6 +156,9 @@ class AnalysisAgentV2:
             max_iterations=self.max_iterations,
             deepresearch_background=self.deepresearch_background,
             log_prompts=self.log_prompts,
+            log_responses=self.log_responses,
+            interactive=self.interactive,
+            output_dir=self.output_dir,
         )
 
         # (2) Idea execution module
@@ -170,6 +180,9 @@ class AnalysisAgentV2:
             use_self_critique=self.use_self_critique,
             use_VLM=self.use_VLM,
             use_documentation=self.use_documentation,
+            log_prompts=self.log_prompts,
+            log_responses=self.log_responses,
+            interactive=self.interactive,
         )
 
         if execution_mode == "claude":

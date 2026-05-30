@@ -142,6 +142,11 @@ def main():
         help="Enable full prompt/body logging in addition to the default analysis trace file",
     )
     parser.add_argument(
+        "--log-responses",
+        action="store_true",
+        help="Save each LLM response as an individual .txt file in {output_dir}/responses/",
+    )
+    parser.add_argument(
         "--deepresearch",
         action="store_true",
         help="Enable DeepResearch background generation (off by default)",
@@ -245,6 +250,8 @@ def main():
             use_VLM=not args.no_vlm,
             use_documentation=not args.no_documentation,
             log_prompts=args.log_prompts,
+            log_responses=args.log_responses,
+            interactive=args.interactive,
             max_fix_attempts=args.max_fix_attempts,
             use_deepresearch_background=cfg.get("use_deepresearch", False),
             execution_mode=exec_mode,
@@ -325,6 +332,8 @@ def main():
         use_VLM=not args.no_vlm,
         use_documentation=not args.no_documentation,
         log_prompts=args.log_prompts,
+        log_responses=args.log_responses,
+        interactive=args.interactive,
         max_fix_attempts=args.max_fix_attempts,
         use_deepresearch_background=args.deepresearch,
         execution_mode=args.execution_mode,
