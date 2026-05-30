@@ -54,7 +54,11 @@ python run_cellvoyager.py \
  --h5ad-path example/HFTA_v2_germ_XX.h5ad \
  --paper-path example/covid19_summary.txt \
  --analysis-name local_test
+```
 
+Run Gemini. requires GEMINI_API_KEY
+
+```bash
 python run_cellvoyager.py \
   --execution-mode legacy \
  --model-name gemini-2.5-flash\
@@ -69,6 +73,33 @@ python run_cellvoyager.py \
  --paper-path example/covid19_summary.txt \
  --analysis-name local_test
 
+```
+
+log prompts and responses - this could be useful for automated pipelines. should work with any model
+
+```bash
+~/miniconda3/envs/CellVoyager/bin/python run_cellvoyager.py \
+  --log-prompts \
+  --log-responses \
+  --execution-mode legacy \
+  --model-name gemini-2.5-flash\
+  --h5ad-path example/HFTA_v2_germ_XX.h5ad \
+  --paper-path example/covid19_summary.txt \
+  --analysis-name 20260528_gemini_api
+```
+
+run in interactive mode. it will save the prompt for you to review. It will be a lot of prompts!
+
+```bash
+~/miniconda3/envs/CellVoyager/bin/python run_cellvoyager.py \
+  --interactive \
+  --log-prompts \
+  --log-responses \
+  --execution-mode legacy \
+  --model-name gemini-2.5-flash\
+  --h5ad-path example/HFTA_v2_germ_XX.h5ad \
+  --paper-path example/covid19_summary.txt \
+  --analysis-name 20260528_gemini_api
 ```
 
 (I'm not sure this is working yet)
