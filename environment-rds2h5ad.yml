@@ -1,0 +1,28 @@
+# Conda environment for converting R single-cell .RDS objects to .h5ad.
+# Used by cellvoyager/rds_to_h5ad.R + cellvoyager/_assemble_h5ad.py.
+#
+# Create it with:
+#   conda env create -f environment-rds2h5ad.yml
+#   conda activate rds2h5ad
+#
+# Why a separate env: the system R on some machines segfaults loading monocle3 /
+# RcppAnnoy native modules. This isolated env reads the object without those
+# packages (the R script supplies a stub class), so deserialization never
+# touches the broken modules.
+name: rds2h5ad
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # R side: read the .RDS and export matrix/metadata/embeddings
+  - r-base=4.3
+  - bioconductor-singlecellexperiment
+  - bioconductor-summarizedexperiment
+  - r-matrix
+  # Python side: assemble the AnnData and write the .h5ad
+  - python>=3.10
+  - anndata
+  - scipy
+  - pandas
+  - numpy
