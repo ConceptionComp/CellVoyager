@@ -17,6 +17,7 @@ This guide covers everything you need to run CellVoyager from the terminal using
     - [Option B: Google Gemini](#option-b-google-gemini)
   - [Preparing Your Inputs](#preparing-your-inputs)
     - [The Dataset File (.h5ad)](#the-dataset-file-h5ad)
+    - [Converting an RDS to h5ad](#converting-an-rds-to-h5ad)
     - [The Dataset Summary File](#the-dataset-summary-file)
   - [Running an Analysis](#running-an-analysis)
     - [Minimal Command](#minimal-command)
@@ -128,7 +129,7 @@ Available Gemini models:
 
 ### The Dataset File (.h5ad)
 
-CellVoyager reads AnnData `.h5ad` files — the standard format for scRNA-seq data in Python. If your data is in Seurat or another format, export it to `.h5ad` first.
+CellVoyager reads AnnData `.h5ad` files — the standard format for scRNA-seq data in Python. If your data is in R (Seurat or Monocle3), convert it first (see [Converting an RDS to h5ad](#converting-an-rds-to-h5ad)).
 
 The agent automatically extracts:
 
@@ -138,6 +139,35 @@ The agent automatically extracts:
 - Any pre-computed results stored in `uns`
 
 No preprocessing required — just point to the file.
+
+### Converting an RDS to h5ad
+
+If your data lives in an `.RDS` file (a Monocle3 `cell_data_set` or a Bioconductor `SingleCellExperiment`), convert it with the helper utility in this repo:
+
+- [`cellvoyager/rds_to_h5ad.R`](../cellvoyager/rds_to_h5ad.R) — reads the object and exports its matrix, cell/gene metadata, and embeddings
+- [`cellvoyager/_assemble_h5ad.py`](../cellvoyager/_assemble_h5ad.py) — assembles those pieces into the `.h5ad`
+
+The conversion runs in its own conda environment (kept separate from the main `CellVoyager` env). Create it once from the spec in this repo:
+
+```bash
+conda env create -f environment-rds2h5ad.yml
+```
+
+Then run the conversion:
+
+```bash
+conda activate rds2h5ad
+export RDS2H5AD_PYTHON="$(which python)"   # the env's python (has anndata)
+Rscript cellvoyager/rds_to_h5ad.R <input.RDS> <output.h5ad> [X_assay_name]
+```
+
+The result preserves the count matrix (`X`), cell metadata (`obs`), gene metadata (`var`), and reduced-dimension embeddings (`obsm`, e.g. `X_pca`, `X_umap`).
+
+> **Why a dedicated env?** On some machines the system R segfaults loading the `monocle3` / `RcppAnnoy` native modules. The isolated env plus the stub-class trick in `rds_to_h5ad.R` lets `readRDS` reconstruct the object without ever loading those packages.
+>
+> **Seurat objects** are not handled by this utility — convert those with `SeuratDisk` or `sceasy` instead.
+
+**Note on gene names:** if your object uses Ensembl IDs as row names, those become `var_names` (the gene index), with gene symbols available in a `var` column such as `gene_short_name`.
 
 ### The Dataset Summary File
 
