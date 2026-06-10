@@ -50,13 +50,35 @@ more failed cells and heavier reliance on the fix loop until prompts are tuned.
 
 ## 4. Work items
 
-### 4.1 Runtime / dependencies (riskiest)
+### 4.1 Runtime / dependencies (riskiest) — ✅ DONE (step 1)
 - Add `rpy2` to Python deps. Extend the existing `r_h5ad`-style conda env to include the
   R packages: `monocle3`, `SingleCellExperiment`, `Matrix`, `ggplot2`. Do **not** use
   system R.
 - Verify the kernel can `%load_ext rpy2.ipython`, `readRDS(...)`, and render R graphics
   **inline as PNG** (required so the VLM step keeps working).
 - Update `environment.yml` (or document the extended env spec) accordingly.
+
+**Implemented as a new unified env `CellVoyager-r`** (spec: `environment-monocle3.yml`) —
+modeled on the `r_h5ad`/`rds2h5ad` style but combining the R backend and the Python
+orchestrator in one env (rpy2 must live in the kernel's Python). Key environment facts
+discovered while building it (all the "fragile runtime" risks were real):
+
+- **This machine's conda is osx-64 (Rosetta)**, not native arm64. Modern `r-monocle3`
+  (1.3.1, R 4.3) is published for osx-64 on bioconda — so monocle3 installs from conda,
+  **no GitHub/C++ compile**. (Native arm64 bioconda only has an ancient 0.2.0.)
+- **`rpy2` pinned to 3.5.17, not 3.6.x.** rpy2 3.6 needs the `R_getVar` symbol added in
+  R 4.5; conda r-monocle3 only builds against R 4.3/4.4, so 3.6 fails to load `libR`.
+- **`r-terra` must be added explicitly** — it's an undeclared runtime dep of bioconda
+  `r-monocle3` (the package fails to load without it).
+- **`R_HOME` must point at the conda env's R.** Otherwise rpy2 defaults to the system
+  arm64 R and dies on an x86_64-vs-arm64 arch mismatch. The registered Jupyter kernelspec
+  (`~/Library/Jupyter/kernels/cellvoyager-r/kernel.json`) sets this via an `env` block.
+- **Verified:** `library(monocle3)` loads without segfault (monocle3 1.3.1); the example
+  CDS reads as a `cell_data_set` (17465 genes × 28809 cells, reducedDims PCA/Aligned/UMAP);
+  `plot_cells(cds)` renders **inline as image/png** through the `cellvoyager-r` kernel.
+- **Open question for step 3+:** the executors must launch their Jupyter kernel as
+  `cellvoyager-r` (with the `R_HOME` env), not the current default kernel. Wire this into
+  the executor kernel-launch code.
 
 ### 4.2 Setup cells in all three executors (the core swap)
 Replace the scanpy import + `sc.read_h5ad(...)` block in each:
