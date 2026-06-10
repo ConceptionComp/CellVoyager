@@ -4,13 +4,8 @@ Uses HypothesisGenerator (cellvoyager.hypothesis) and either IdeaExecutor
 (cellvoyager.execution.legacy) or ClaudeJupyterExecutor (cellvoyager.execution.claude).
 """
 import os
+import sys
 import datetime
-import pandas as pd
-import numpy as np
-import h5py
-from h5py import Dataset, Group
-
-import anndata
 
 from cellvoyager.hypothesis import HypothesisGenerator
 from cellvoyager.llm_utils import create_gemini_client, create_openai_client, get_model_provider
@@ -18,7 +13,7 @@ from cellvoyager.execution.legacy import IdeaExecutor
 from cellvoyager.logger import Logger
 from cellvoyager.deepresearch import DeepResearcher
 
-AVAILABLE_PACKAGES = "scanpy, anndata, matplotlib, numpy, seaborn, pandas, scipy, harmonypy, bbknn"
+AVAILABLE_PACKAGES = "monocle3, SingleCellExperiment, Matrix, ggplot2"
 
 
 class AnalysisAgentV2:
@@ -113,18 +108,14 @@ class AnalysisAgentV2:
 
         self.logger = Logger(self.analysis_name, log_dir=os.path.join(log_home, "logs"))
 
-        # Load adata metadata and build summary for planning.
-        # In Claude mode, avoid a full anndata load here because the notebook setup cell
-        # loads adata into memory for execution.
+        # Load the Monocle3 cell_data_set (.RDS) and build a text summary for planning.
+        # This runs in the orchestrator process via rpy2 (not the Jupyter kernel), so
+        # _summarize_cds points R_HOME at this env's R before importing rpy2.
         if self.h5ad_path == "":
             self.adata_summary = ""
         else:
-            if execution_mode == "claude":
-                print("Loading h5ad metadata for summarization (no full AnnData load)...")
-                self.adata_summary = self._summarize_adata_obs_only(self.h5ad_path, length_cutoff=25)
-            else:
-                print("Loading anndata for summarization...")
-                self.adata_summary = self._summarize_adata_full(self.h5ad_path)
+            print("Loading CDS (.RDS) for summarization via rpy2...")
+            self.adata_summary = self._summarize_cds(self.h5ad_path)
             print(f"✅ Loaded summary from {self.h5ad_path}")
 
         # DeepResearch for idea generation
@@ -201,192 +192,100 @@ class AnalysisAgentV2:
         else:
             self.executor = IdeaExecutor(**shared_executor_kwargs)
 
-    def _summarize_adata_full(self, h5ad_path, length_cutoff=25):
-        """Summarize all AnnData attributes: .obs, .var, .obsm, .layers, .uns, .obsp, .varp."""
+    def _ensure_r(self):
+        """Initialize rpy2 against this env's R and return the robjects module.
+
+        The summarizer runs in the orchestrator process (not the Jupyter kernel),
+        so R_HOME may be unset here. If so, point it at <sys.prefix>/lib/R — the R
+        shipped in the CellVoyager-r conda env. Without this, rpy2 grabs the system
+        arm64 R and crashes on an x86_64/arm64 arch mismatch (see the migration spec).
+        """
+        if "R_HOME" not in os.environ:
+            candidate = os.path.join(sys.prefix, "lib", "R")
+            if os.path.isdir(candidate):
+                os.environ["R_HOME"] = candidate
+        import rpy2.robjects as ro
+        return ro
+
+    # R routine that summarizes a cell_data_set as a text block. Mirrors the old
+    # AnnData summarizer's shape (per-column unique values, capped at length_cutoff)
+    # but reports CDS equivalents: colData≈.obs, rowData≈.var, reducedDims≈.obsm,
+    # assays≈.X/layers.
+    _R_CDS_SUMMARY = r'''
+    function(rds_path, length_cutoff) {
+      suppressMessages(library(monocle3))
+      cds <- readRDS(rds_path)
+      parts <- character(0)
+      add <- function(s) parts[[length(parts) + 1L]] <<- s
+
+      n_genes <- nrow(cds); n_cells <- ncol(cds)
+      add(sprintf("cds (cell_data_set): %d cells × %d genes\n", n_cells, n_genes))
+
+      summarize_df <- function(df) {
+        if (is.null(df) || ncol(df) == 0L) return("  (empty)")
+        lines <- character(0)
+        for (col in colnames(df)) {
+          vals <- df[[col]]
+          vals <- vals[!is.na(vals)]
+          u <- unique(vals)
+          if (length(u) == 0L) {
+            s <- "(all NA/empty)"
+          } else if (length(u) > length_cutoff) {
+            s <- paste0(paste(as.character(head(u, length_cutoff)), collapse = ", "),
+                        sprintf(" ... and %d more", length(u) - length_cutoff))
+          } else {
+            s <- paste(as.character(u), collapse = ", ")
+          }
+          lines <- c(lines, sprintf("  %s: %s", col, s))
+        }
+        paste(lines, collapse = "\n")
+      }
+
+      add("--- colData(cds)  [cell metadata; analog of adata.obs] ---")
+      add(summarize_df(as.data.frame(colData(cds))))
+
+      rd <- as.data.frame(rowData(cds))
+      if (!is.null(rd) && ncol(rd) > 0L) {
+        add("\n--- rowData(cds)  [gene metadata; analog of adata.var] ---")
+        add(summarize_df(rd))
+      }
+
+      rdims <- reducedDimNames(cds)
+      if (length(rdims) > 0L) {
+        add("\n--- reducedDims(cds)  [analog of adata.obsm] ---")
+        for (nm in rdims) {
+          d <- dim(reducedDims(cds)[[nm]])
+          add(sprintf("  %s: shape (%d, %d)", nm, d[1], d[2]))
+        }
+      }
+
+      an <- assayNames(cds)
+      if (length(an) > 0L) {
+        add("\n--- assays(cds)  [count matrices; analog of adata.X / layers] ---")
+        for (nm in an) {
+          d <- dim(assay(cds, nm))
+          add(sprintf("  %s: shape (%d, %d)  [genes × cells]", nm, d[1], d[2]))
+        }
+      }
+
+      paste(parts, collapse = "\n")
+    }
+    '''
+
+    def _summarize_cds(self, rds_path, length_cutoff=25):
+        """Summarize a Monocle3 cell_data_set (.RDS) via rpy2 as a text block.
+
+        Returns the same shape of text summary the old AnnData path produced, so
+        downstream planning prompts are unaffected. On any failure, returns a short
+        error string rather than raising, matching the old summarizer's behavior.
+        """
         try:
-            adata = anndata.read_h5ad(h5ad_path, backed="r")
+            ro = self._ensure_r()
+            summarize = ro.r(self._R_CDS_SUMMARY)
+            result = summarize(rds_path, length_cutoff)
+            return str(result[0])
         except Exception as e:
-            try:
-                fallback = self._summarize_adata_obs_only(h5ad_path, length_cutoff)
-                return f"Could not load full adata ({e}). Falling back to .obs only.\n\n" + fallback
-            except Exception as e2:
-                return f"Could not load adata: {e}. Fallback also failed: {e2}"
-
-        parts = []
-
-        # adata shape
-        parts.append(f"adata shape: {adata.n_obs} cells × {adata.n_vars} genes\n")
-
-        # .obs
-        parts.append("--- adata.obs ---")
-        if adata.obs is not None and len(adata.obs) > 0:
-            parts.append(self._summarize_df(adata.obs, length_cutoff))
-        else:
-            parts.append("  (empty)")
-
-        # .var
-        if adata.var is not None and len(adata.var.columns) > 0:
-            parts.append("\n--- adata.var ---")
-            parts.append(self._summarize_df(adata.var, length_cutoff))
-
-        # .obsm
-        if adata.obsm is not None and len(adata.obsm) > 0:
-            parts.append("\n--- adata.obsm ---")
-            for k, v in adata.obsm.items():
-                sh = getattr(v, "shape", "?")
-                parts.append(f"  {k}: shape {sh}")
-
-        # .varm
-        if adata.varm is not None and len(adata.varm) > 0:
-            parts.append("\n--- adata.varm ---")
-            for k, v in adata.varm.items():
-                sh = getattr(v, "shape", "?")
-                parts.append(f"  {k}: shape {sh}")
-
-        # .layers
-        if adata.layers is not None and len(adata.layers) > 0:
-            parts.append("\n--- adata.layers ---")
-            for k, v in adata.layers.items():
-                sh = getattr(v, "shape", "?")
-                parts.append(f"  {k}: shape {sh}")
-
-        # .obsp
-        if adata.obsp is not None and len(adata.obsp) > 0:
-            parts.append("\n--- adata.obsp ---")
-            for k, v in adata.obsp.items():
-                sh = getattr(v, "shape", "?")
-                parts.append(f"  {k}: shape {sh}")
-
-        # .varp
-        if adata.varp is not None and len(adata.varp) > 0:
-            parts.append("\n--- adata.varp ---")
-            for k, v in adata.varp.items():
-                sh = getattr(v, "shape", "?")
-                parts.append(f"  {k}: shape {sh}")
-
-        # .uns
-        if adata.uns is not None and len(adata.uns) > 0:
-            parts.append("\n--- adata.uns ---")
-            for k, v in adata.uns.items():
-                t = type(v).__name__
-                if isinstance(v, (list, np.ndarray)):
-                    extras = f" len={len(v)}"
-                elif isinstance(v, dict):
-                    extras = f" keys={list(v.keys())[:5]}..."
-                else:
-                    extras = ""
-                parts.append(f"  {k}: {t}{extras}")
-
-        if hasattr(adata, "file") and adata.file is not None:
-            try:
-                adata.file.close()
-            except Exception:
-                pass
-
-        return "\n".join(parts)
-
-    def _summarize_df(self, df, length_cutoff):
-        if df is None or len(df) == 0:
-            return "  (empty)"
-        lines = []
-        for col in df.columns:
-            try:
-                unique_vals = df[col].dropna().unique()
-                if len(unique_vals) > length_cutoff:
-                    vals_str = str(list(unique_vals[:length_cutoff])) + f" ... and {len(unique_vals) - length_cutoff} more"
-                else:
-                    vals_str = str(list(unique_vals))
-                lines.append(f"  {col}: {vals_str}")
-            except Exception:
-                lines.append(f"  {col}: (could not summarize)")
-        return "\n".join(lines)
-
-    def _summarize_adata_obs_only(self, h5ad_path, length_cutoff):
-        """Fallback: summarize only .obs when full load fails."""
-        self.adata_obs = self._load_h5ad_obs(h5ad_path)
-        return "Below is a description of the columns in adata.obs:\n" + self._summarize_df(self.adata_obs, length_cutoff)
-
-    def _load_h5ad_obs(self, h5ad_path):
-        """Load just the .obs data from an h5ad file while preserving data types"""
-        with h5py.File(h5ad_path, "r") as f:
-            obs_dict = {}
-
-            for raw_k in [k for k in f["obs"].keys() if not k.startswith("_")]:
-                k = raw_k.decode("utf-8") if isinstance(raw_k, bytes) else raw_k
-                item = f["obs"][raw_k]
-                if isinstance(item, Dataset):
-                    data = item[:]
-                elif isinstance(item, Group) and "codes" in item.keys() and "categories" in item.keys():
-                    data = item["codes"][:]
-                    categories = item["categories"][:]
-                    categories = [
-                        x.decode("utf-8") if isinstance(x, bytes) else str(x) for x in categories
-                    ]
-                    data = pd.Categorical.from_codes(
-                        data.astype(int) if not np.issubdtype(data.dtype, np.integer) else data,
-                        categories=categories,
-                    )
-                else:
-                    raise ValueError(f"Didnt account for this datatype in h5ad: {type(item)}")
-
-                if "categories" in item.attrs:
-                    try:
-                        cat_ref = item.attrs["categories"]
-                        if isinstance(cat_ref, h5py.h5r.Reference):
-                            cat_vals = f[cat_ref][:]
-                            categories = [
-                                x.decode("utf-8") if isinstance(x, bytes) else str(x)
-                                for x in cat_vals
-                            ]
-                        else:
-                            cat_vals = cat_ref[:]
-                            categories = [
-                                x.decode("utf-8") if isinstance(x, bytes) else str(x)
-                                for x in cat_vals
-                            ]
-                        data = pd.Categorical.from_codes(
-                            data.astype(int) if not np.issubdtype(data.dtype, np.integer) else data,
-                            categories=categories,
-                        )
-                    except Exception as e:
-                        print(f"Warning: Error with categorical {k}: {str(e)}")
-                        data = np.array(
-                            [
-                                x.decode("utf-8") if isinstance(x, bytes) else str(x)
-                                for x in data
-                            ]
-                        )
-                elif (
-                    data.dtype.kind in ["S", "O"]
-                    or h5py.check_string_dtype(f["obs"][raw_k].dtype) is not None
-                ):
-                    try:
-                        data = np.array(
-                            [
-                                x.decode("utf-8") if isinstance(x, bytes) else str(x)
-                                for x in data
-                            ]
-                        )
-                    except Exception as e:
-                        print(f"Warning: Error decoding strings in {k}: {str(e)}")
-
-                obs_dict[k] = data
-
-            try:
-                if "_index" in f["obs"]:
-                    idx = f["obs"]["_index"][:]
-                    index = np.array(
-                        [x.decode("utf-8") if isinstance(x, bytes) else str(x) for x in idx]
-                    )
-                else:
-                    index = None
-            except Exception as e:
-                print(f"Warning: Error processing index: {str(e)}")
-                index = None
-
-        df = pd.DataFrame(obs_dict, index=index)
-        print(f"Loaded obs data: {len(df)} rows × {len(df.columns)} columns")
-        return df
+            return f"Could not summarize CDS at {rds_path}: {e}"
 
     def run(self, seeded_hypotheses=None):
         """

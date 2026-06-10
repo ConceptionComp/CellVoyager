@@ -1,6 +1,6 @@
 # Spec: Switching CellVoyager from scanpy to monocle3
 
-**Status:** In progress — step 1 (environment) complete; steps 2–8 pending
+**Status:** In progress — steps 1–2 complete; steps 3–8 pending
 **Branch:** `monocle3-migration`
 **Source scoping doc:** `~/.claude/plans/can-you-look-at-twinkly-octopus.md`
 
@@ -10,6 +10,20 @@
   (`environment-monocle3.yml`); rpy2↔R bridge, monocle3 load, and inline-PNG plotting
   all verified on the example CDS. See §4.1 for the resolved runtime gotchas and §4.2 for
   the kernel-launch follow-up this created.
+- **Step 2 (summarizer + `AVAILABLE_PACKAGES`) — ✅ DONE.** Replaced the four
+  anndata/h5py summarizer methods in `cellvoyager/agent.py`
+  (`_summarize_adata_full`, `_summarize_adata_obs_only`, `_load_h5ad_obs`,
+  `_summarize_df`) with a single rpy2-based `_summarize_cds()` (plus an `_ensure_r()`
+  helper that sets `R_HOME=<sys.prefix>/lib/R` so the **orchestrator process** — not just
+  the kernel — finds the conda R). The R routine reports CDS equivalents (colData≈.obs,
+  rowData≈.var, reducedDims≈.obsm, assays≈.X/layers) in the same text-block shape, so
+  downstream prompts are untouched. `AVAILABLE_PACKAGES` is now
+  `"monocle3, SingleCellExperiment, Matrix, ggplot2"`. Dropped the now-unused
+  `pandas/numpy/h5py/anndata` imports from `agent.py`. **Verified (§6.2):** ran
+  `_summarize_cds` on the example RDS — sensible block (28809 cells × 17465 genes,
+  colData columns, reducedDims PCA/Aligned/UMAP, counts assay); `py_compile` clean.
+  Note: `self.h5ad_path`/`self.adata_summary` names are intentionally kept — the rename
+  is step 4 (§4.6).
 
 ## 1. Summary
 
@@ -104,7 +118,7 @@ kernel as **`cellvoyager-r`** (or otherwise ensure the kernel process has
 `R_HOME`, rpy2 loads the system arm64 R and crashes on an arch mismatch. Audit each
 executor's kernel-manager/kernel-name wiring as part of this step.
 
-### 4.3 Data summarization — rewrite for CDS (substantial)
+### 4.3 Data summarization — rewrite for CDS (substantial) — ✅ DONE (step 2)
 `cellvoyager/agent.py:204-389` summarizes an AnnData via `anndata.read_h5ad(backed="r")`
 and raw `h5py` (`_summarize_adata_full`, `_summarize_adata_obs_only`, `_load_h5ad_obs`,
 `_summarize_df`). None of this works on `.RDS`. Replace with an rpy2-based summarizer
@@ -136,9 +150,10 @@ In `cellvoyager/prompts/`:
     `{{`/`}}`.
 
 ### 4.5 `AVAILABLE_PACKAGES` and docs helper
-- `cellvoyager/agent.py:21` — replace the scanpy-centric `AVAILABLE_PACKAGES` string with
-  the monocle3/R set: `monocle3, SingleCellExperiment, Matrix, ggplot2` (R-only plotting,
-  so drop scanpy/anndata/seaborn; keep any Python libs only if Python actually remains).
+- ✅ **DONE (step 2)** — `cellvoyager/agent.py` — replaced the scanpy-centric
+  `AVAILABLE_PACKAGES` string with the monocle3/R set:
+  `monocle3, SingleCellExperiment, Matrix, ggplot2` (R-only plotting, so scanpy/anndata/
+  seaborn dropped). Docs helper below remains for step 5.
 - `cellvoyager/utils.py:102-126` — `get_documentation()` currently resolves only
   `sc.`/`scanpy.` calls via Python `inspect.getdoc`. **Reimplement to pull R help via
   rpy2** for monocle3 functions (e.g. capture `?function` / `help` text through rpy2), so
@@ -187,8 +202,8 @@ shuttle strings and images and are backend-agnostic.
 
 ## 8. Suggested implementation order
 1. ✅ **DONE** — Environment: `CellVoyager-r` conda env + `rpy2`, inline-PNG verified (§4.1, §6.1).
-2. Summarizer rewrite + `AVAILABLE_PACKAGES` (§4.3, §4.5) — verify on example RDS (§6.2). **← next**
-3. Setup cells across the three executors, incl. launching the `cellvoyager-r` kernel (§4.2).
+2. ✅ **DONE** — Summarizer rewrite + `AVAILABLE_PACKAGES` (§4.3, §4.5) — verified on example RDS (§6.2).
+3. Setup cells across the three executors, incl. launching the `cellvoyager-r` kernel (§4.2). **← next**
 4. CLI/param rename + GUI call site (§4.6).
 5. Docs helper R-help reimplementation (§4.5) — verify (§6.3).
 6. Prompt rewrites (§4.4).
