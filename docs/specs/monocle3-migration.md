@@ -1,8 +1,15 @@
 # Spec: Switching CellVoyager from scanpy to monocle3
 
-**Status:** Draft for implementation
+**Status:** In progress — step 1 (environment) complete; steps 2–8 pending
 **Branch:** `monocle3-migration`
 **Source scoping doc:** `~/.claude/plans/can-you-look-at-twinkly-octopus.md`
+
+### Progress log
+
+- **Step 1 (environment) — ✅ DONE.** Built the `CellVoyager-r` conda env
+  (`environment-monocle3.yml`); rpy2↔R bridge, monocle3 load, and inline-PNG plotting
+  all verified on the example CDS. See §4.1 for the resolved runtime gotchas and §4.2 for
+  the kernel-launch follow-up this created.
 
 ## 1. Summary
 
@@ -91,6 +98,12 @@ New shared setup cell shape: `%load_ext rpy2.ipython`; `library(monocle3)`;
 analog of today's `adata`). Reproduce the "Loading data…/Loaded N cells × N genes" prints
 via R.
 
+**Kernel launch (carried over from step 1):** each executor must launch its Jupyter
+kernel as **`cellvoyager-r`** (or otherwise ensure the kernel process has
+`R_HOME=<CellVoyager-r prefix>/lib/R`), not the current default kernel. Without the right
+`R_HOME`, rpy2 loads the system arm64 R and crashes on an arch mismatch. Audit each
+executor's kernel-manager/kernel-name wiring as part of this step.
+
 ### 4.3 Data summarization — rewrite for CDS (substantial)
 `cellvoyager/agent.py:204-389` summarizes an AnnData via `anndata.read_h5ad(backed="r")`
 and raw `h5py` (`_summarize_adata_full`, `_summarize_adata_obs_only`, `_load_h5ad_obs`,
@@ -173,9 +186,9 @@ shuttle strings and images and are backend-agnostic.
   environment (extend `r_h5ad`) are all decided above.
 
 ## 8. Suggested implementation order
-1. Environment: extend conda env, add `rpy2`, verify inline PNG plotting (§4.1, §6.1).
-2. Summarizer rewrite + `AVAILABLE_PACKAGES` (§4.3, §4.5) — verify on example RDS (§6.2).
-3. Setup cells across the three executors (§4.2).
+1. ✅ **DONE** — Environment: `CellVoyager-r` conda env + `rpy2`, inline-PNG verified (§4.1, §6.1).
+2. Summarizer rewrite + `AVAILABLE_PACKAGES` (§4.3, §4.5) — verify on example RDS (§6.2). **← next**
+3. Setup cells across the three executors, incl. launching the `cellvoyager-r` kernel (§4.2).
 4. CLI/param rename + GUI call site (§4.6).
 5. Docs helper R-help reimplementation (§4.5) — verify (§6.3).
 6. Prompt rewrites (§4.4).
