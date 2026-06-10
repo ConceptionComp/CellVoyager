@@ -1,6 +1,6 @@
 # Spec: Switching CellVoyager from scanpy to monocle3
 
-**Status:** In progress — steps 1–4 complete; steps 5–8 pending
+**Status:** In progress — steps 1–5 complete; steps 6–8 pending
 **Branch:** `monocle3-migration`
 **Source scoping doc:** `~/.claude/plans/can-you-look-at-twinkly-octopus.md`
 
@@ -69,6 +69,27 @@
   RDS→h5ad converter and legitimately keeps its `h5ad` names. **Verified:** `py_compile`
   clean on all six touched files; `grep h5ad_path` over `cellvoyager/` + `run_cellvoyager.py`
   is empty (excluding the converter).
+
+- **Step 5 (docs helper → R help) — ✅ DONE.** Rewrote `cellvoyager/utils.py`'s
+  `get_documentation()` (the fix/critique-loop docs section) from scanpy/`inspect.getdoc`
+  to monocle3-via-rpy2. The old Python-AST machinery (`extract_call_names`, `resolve_obj`,
+  `load_namespace`) and the **import-time scanpy demo block** (which would have triggered R
+  init on every `import utils`) are gone. New pipeline: (1) `extract_r_call_names()` —
+  regex that grabs identifiers (optionally `pkg::`-qualified) immediately before `(`, so it
+  works on raw R, `%%R` cells, or `ro.r("…")` strings alike; (2) `_r_doc_tools()` —
+  `lru_cache`d one-time R init that loads `monocle3, SingleCellExperiment, Matrix, ggplot2`,
+  builds the union of their `getNamespaceExports` (cheap pre-filter, analog of the old
+  `sc.*` gate), and compiles an R help function; (3) per call name, fetch the help page.
+  The R helper uses `do.call(utils::help, list(name))` (not `help(name)` — `help()`
+  `substitute()`s its arg, so a bare variable resolves to the literal symbol), filters by
+  the resolved help **path's owning package** so base-R generics a target package re-exports
+  (e.g. `print`) are dropped, renders Rd via `capture.output(tools::Rd2txt(...))`, and Python
+  strips the terminal overstrike sequences (`_\x08C`) Rd2txt emits. `R_HOME` is set the same
+  way as `agent._summarize_cds` (orchestrator-process rpy2 → point at `<sys.prefix>/lib/R`).
+  Failures return a short marker string, never raise. **Verified (§6.3):** in the
+  `CellVoyager-r` env, `get_documentation("reduce_dimension(cds)")` returns the real
+  monocle3 help (~5k chars, clean text); a multi-call blob yields `cluster_cells` +
+  `top_markers` docs with `print(...)` correctly filtered out; `py_compile` clean.
 
 ## 1. Summary
 
@@ -199,10 +220,10 @@ In `cellvoyager/prompts/`:
   `AVAILABLE_PACKAGES` string with the monocle3/R set:
   `monocle3, SingleCellExperiment, Matrix, ggplot2` (R-only plotting, so scanpy/anndata/
   seaborn dropped). Docs helper below remains for step 5.
-- `cellvoyager/utils.py:102-126` — `get_documentation()` currently resolves only
-  `sc.`/`scanpy.` calls via Python `inspect.getdoc`. **Reimplement to pull R help via
-  rpy2** for monocle3 functions (e.g. capture `?function` / `help` text through rpy2), so
-  the fix loop keeps a working docs section.
+- ✅ **DONE (step 5)** — `cellvoyager/utils.py` — `get_documentation()` reimplemented to
+  pull R help via rpy2 for the target packages (regex R-call extraction + `do.call(help)` +
+  package-path filter + `Rd2txt`), replacing the scanpy `inspect.getdoc` path. Verified on
+  `reduce_dimension` (§6.3).
 
 ### 4.6 CLI and naming (hard rename) — ✅ DONE (step 4)
 - `run_cellvoyager.py:24-28` — rename `--h5ad-path` → `--rds-path` (no alias).
@@ -250,7 +271,7 @@ shuttle strings and images and are backend-agnostic.
 2. ✅ **DONE** — Summarizer rewrite + `AVAILABLE_PACKAGES` (§4.3, §4.5) — verified on example RDS (§6.2).
 3. ✅ **DONE** — Setup cells across the three executors, incl. launching the `cellvoyager-r` kernel (§4.2) — verified on example RDS, inline PNG confirmed (§6.1).
 4. ✅ **DONE** — CLI/param rename `--h5ad-path`→`--rds-path`, `h5ad_path`→`rds_path` through agent + 3 executors + GUI; example-RDS defaults (§4.6).
-5. Docs helper R-help reimplementation (§4.5) — verify (§6.3). **← next**
-6. Prompt rewrites (§4.4).
+5. ✅ **DONE** — Docs helper R-help reimplementation (§4.5) — verified on `reduce_dimension` (§6.3).
+6. Prompt rewrites (§4.4). **← next**
 7. Example/docs updates (§4.7).
 8. End-to-end per executor + fix loop (§6.4, §6.5).
