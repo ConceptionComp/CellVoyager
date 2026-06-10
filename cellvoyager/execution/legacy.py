@@ -23,8 +23,8 @@ CELLVOYAGER_KERNEL_NAME = os.environ.get("CELLVOYAGER_KERNEL_NAME", "cellvoyager
 
 
 def strip_code_markers(text):
-    """Remove ```python, ``` and ``` from code blocks."""
-    return re.sub(r"```python|```", "", text)
+    """Remove ```r, ```python and ``` fences from code blocks."""
+    return re.sub(r"```r|```R|```python|```", "", text)
 
 
 class IdeaExecutor:
@@ -247,18 +247,18 @@ class IdeaExecutor:
         if len(documentation) > max_documentation_chars:
             truncated_documentation = "...(documentation truncated)...\n" + truncated_documentation
 
-        prompt = f"""Fix this code that produced an error:
+        prompt = f"""Fix this R (monocle3) code that produced an error:
 
         Code:
-        ```python
+        ```r
         {code}
         ```
 
         Error:
         {truncated_error}
 
-        Provide only the fixed code with no explanation.
-        You can only use the following packages: {AVAILABLE_PACKAGES}
+        Provide only the fixed code with no explanation. Keep it R run through monocle3 inside a `%%R` cell, reusing the in-memory `cds` cell_data_set; do NOT rewrite it as Python/scanpy.
+        You can only use the following R packages: {AVAILABLE_PACKAGES}
 
         Here is previous code/context (if any):
         {truncated_other_code}
@@ -286,12 +286,12 @@ class IdeaExecutor:
             model=self.model_name,
             messages=[
                 {"role": "system", "content": (
-                    "You are a coding assistant helping to fix single-cell transcriptomics code. "
-                    "Key scanpy API rules: "
-                    "(1) sc.tl.dpt() has no 'root' parameter — set adata.uns['iroot'] = <cell_index> before calling it. "
-                    "(2) sc.pl.paga_compare() requires sc.pl.paga(adata) to be called first to populate adata.uns['paga']['pos']. "
-                    "(3) UFuncTypeError on adata.obs columns means the column has numpy structured/record dtype — fix by extracting a plain array with .astype(float) or indexing the field (col['fieldname']) before numeric operations. "
-                    "(4) Provide only fixed code with no explanation."
+                    "You are a coding assistant helping to fix single-cell transcriptomics code written in R with monocle3 (run via rpy2 `%%R` cell magic), operating on the in-memory cell_data_set `cds`. "
+                    "Key monocle3 API rules: "
+                    "(1) Most workflow steps have ordering dependencies — reduce_dimension(cds) requires preprocess_cds(cds); cluster_cells(cds) requires reduce_dimension(cds); learn_graph(cds) requires cluster_cells(cds); order_cells(cds) requires learn_graph(cds) and a root (root_pr_nodes/root_cells). plot_cells(cds, color_cells_by='pseudotime') needs order_cells first; color_cells_by='cluster' needs cluster_cells first. "
+                    "(2) These functions RETURN an updated cds — reassign it (cds <- reduce_dimension(cds)); the object is not mutated in place. graph_test/top_markers/fit_models return data.frames, not modified cds objects. "
+                    "(3) Access data with R accessors on cds: colData(cds), rowData(cds)/fData(cds), reducedDims(cds), exprs(cds)/assay(cds,'counts'); genes are addressed by rownames(cds) (symbol often in rowData(cds)$gene_short_name). Subset with R brackets cds[gene_rows, cell_cols]; remember R is 1-indexed. A ggplot only renders when the plot object is printed. "
+                    "(4) Keep the fix as R/monocle3 — do NOT convert it to Python/scanpy. Provide only fixed code with no explanation."
                 )},
                 {"role": "user", "content": prompt},
             ],
@@ -310,7 +310,7 @@ class IdeaExecutor:
         prompt = f"""Generate 1-2 sentences describing the goal of the code, what it is doing, and why.
 
         Code:
-        ```python
+        ```r
         {code}
         ```
         """
@@ -408,7 +408,7 @@ class IdeaExecutor:
                     messages=[
                         {
                             "role": "system",
-                            "content": "You are a single-cell transcriptomics expert providing feedback on Python code and analysis plan.",
+                            "content": "You are a single-cell transcriptomics expert providing feedback on R (monocle3) code and analysis plan.",
                         },
                         {"role": "user", "content": user_content},
                     ],
@@ -425,7 +425,7 @@ class IdeaExecutor:
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a single-cell bioinformatics expert providing feedback on Python code and analysis plan.",
+                        "content": "You are a single-cell bioinformatics expert providing feedback on R (monocle3) code and analysis plan.",
                     },
                     {"role": "user", "content": prompt},
                 ],
@@ -748,7 +748,7 @@ print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
             else:
                 print(f"⚠️ Code errored with: {error_msg}")
                 self.logger.log_response(
-                    f"STEP {step_idx} FAILED - Analysis {analysis_idx+1}\n\nCode:\n```python\n{current_code}\n\n Error:\n{error_msg}```",
+                    f"STEP {step_idx} FAILED - Analysis {analysis_idx+1}\n\nCode:\n```r\n{current_code}\n\n Error:\n{error_msg}```",
                     f"step_execution_failed_{step_name}",
                 )
                 fix_attempt, fix_successful = 0, False
@@ -815,7 +815,7 @@ print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
                     else:
                         print(f"  ❌ Fix attempt {fix_attempt} failed")
                         self.logger.log_response(
-                            f"FIX ATTEMPT FAILED {fix_attempt}/{self.max_fix_attempts} - Analysis {analysis_idx+1}, Step {step_idx}: {error_msg}\n\nCode:\n```python\n{current_code}\n```",
+                            f"FIX ATTEMPT FAILED {fix_attempt}/{self.max_fix_attempts} - Analysis {analysis_idx+1}, Step {step_idx}: {error_msg}\n\nCode:\n```r\n{current_code}\n```",
                             f"fix_attempt_failed_{step_name}_{fix_attempt}",
                         )
                         if fix_attempt == self.max_fix_attempts:
@@ -869,7 +869,7 @@ print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
                     else "No additional analysis steps generated"
                 )
                 self.logger.log_response(
-                    f"NEXT STEP PLAN - Analysis {analysis_idx+1}, Step {iteration + 2}: {first_step_description}\n\nCode:\n```python\n{next_step_analysis['first_step_code']}\n```",
+                    f"NEXT STEP PLAN - Analysis {analysis_idx+1}, Step {iteration + 2}: {first_step_description}\n\nCode:\n```r\n{next_step_analysis['first_step_code']}\n```",
                     f"initial_analysis_{step_name}",
                 )
 

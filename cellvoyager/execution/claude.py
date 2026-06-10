@@ -45,6 +45,7 @@ CELLVOYAGER_KERNEL_NAME = os.environ.get("CELLVOYAGER_KERNEL_NAME", "cellvoyager
 def strip_code_fences(text: str) -> str:
     if not text:
         return ""
+    text = re.sub(r"^```[rR]\s*", "", text.strip())
     text = re.sub(r"^```python\s*", "", text.strip())
     text = re.sub(r"^```\s*", "", text.strip())
     text = re.sub(r"\s*```$", "", text.strip())

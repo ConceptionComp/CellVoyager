@@ -5,13 +5,13 @@ Guidelines for constructing the analyses:
     4. For analyses that depend on celltype, look at each celltype separately. Focus on the celltypes that you think will be most relevant.
     5. For suggesting novel analyses not present in the paper, focus on using new computational methods, looking at new celltypes/genes/features, and finding new ways to visualize the dataset.
     6. Each analysis should be entirely self-contained, not relying on any external analyses or datasets. It should be able to be run without changing anything.
-    7. You can only use the following Python packages: {available_packages}. DO NOT USE ANY OTHER PACKAGES.
-    8. Make sure to only use data found in the anndata object. Take advantage of as much of the metadata information as possible.
-    9. The path to the anndata object is {adata_path}
-    10. The analysis should be focused on one core goal/hypothesis. It should not branch out from this significantly. 
-    11. DO NOT LOAD THE anndata file, it is already in memory (access it with the variable name adata)
+    7. All code must be R run through monocle3, NOT Python/scanpy. Write the R code inside an IPython `%%R` cell-magic block (rpy2 is loaded via `%load_ext rpy2.ipython`); for short snippets you may instead use `rpy2.robjects.r(...)`. You can only use the following R packages: {available_packages}. DO NOT USE ANY OTHER PACKAGES.
+    8. Make sure to only use data found in the Monocle3 cell_data_set object. Take advantage of as much of the metadata information as possible (colData for cell metadata, rowData/fData for gene metadata, reducedDims for embeddings, the counts/expression assays).
+    9. The path to the Monocle3 cell_data_set `.RDS` file is {adata_path}
+    10. The analysis should be focused on one core goal/hypothesis. It should not branch out from this significantly.
+    11. DO NOT LOAD THE `.RDS` file — the Monocle3 cell_data_set is already in memory in the R global environment under the variable name `cds`. Reuse it directly across `%%R` cells (objects persist in `R_GlobalEnv`). Remember R is 1-indexed.
     12. The analyses should be standard and should be analyses you think the paper missed.
 
-Here is a summary of core single-cell analyses commonly done with the python libraries available to you:
+Here is a summary of core single-cell analyses commonly done with the R packages available to you:
 {analyses_overview}
 

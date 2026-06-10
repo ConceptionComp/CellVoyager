@@ -1,10 +1,10 @@
 Given this specific hypothesis: "{hypothesis}"
 
-Please generate a detailed analysis plan to test this hypothesis using single-cell RNA-seq data.
+Please generate a detailed analysis plan to test this hypothesis using single-cell RNA-seq data, implemented in R with monocle3 (the data is already loaded as the cell_data_set `cds`).
 
 {coding_guidelines}
 
-Dataset summary:
+Monocle3 cell_data_set (cds) summary:
 {adata_summary}
 
 Paper context:

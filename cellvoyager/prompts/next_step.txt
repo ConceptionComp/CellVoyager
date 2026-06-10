@@ -22,7 +22,7 @@ Original Overall Analysis Plan:
 
 {CODING_GUIDELINES}
 
-You are given the following summary of the anndata object:
+You are given the following summary of the Monocle3 cell_data_set (cds):
 {adata_summary}
 
 Here are the previous analyses attempted:

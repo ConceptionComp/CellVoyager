@@ -1,49 +1,39 @@
+All code below is R, executed through monocle3 (via rpy2 `%%R` cell magic). The data handle is the R object `cds`, a Monocle3 `cell_data_set` (an extension of `SingleCellExperiment`). It is already loaded in memory. Access its parts with R accessors: `colData(cds)` (cell metadata), `rowData(cds)`/`fData(cds)` (gene metadata), `reducedDims(cds)` (embeddings), `assay(cds, "counts")`/`exprs(cds)` (expression matrices), `dim(cds)` (returns `[genes, cells]`).
+
+## Preprocessing
+Purpose: Normalize, log-transform, and reduce the data to a low-dimensional PCA space that downstream steps build on.
+preprocess_cds: `cds <- preprocess_cds(cds, num_dim = 50, method = "PCA")` normalizes (log + size-factor) and computes the top principal components, stored in `reducedDims(cds)[["PCA"]]`. Use `method = "PCA"` (default) or `"LSI"`. Inspect explained variance with `plot_pc_variance_explained(cds)`. Batch effects can be removed afterward with `cds <- align_cds(cds, alignment_group = "<batch_column>")`, which writes an `"Aligned"` reduced dim that later steps will pick up automatically. Note: a CDS read from an existing `.RDS` may already be preprocessed/aligned — check `reducedDimNames(cds)` before recomputing.
+
 ## Dimensionality Reduction
-Purpose: Embed high-dimensional gene expression into lower dimensions for visualization and analysis.
-
-Non-linear Embeddings: Further reduce to 2D/3D for visualization using t-SNE or UMAP. Scanpy provides sc.tl.umap(adata) (via UMAP) and sc.tl.tsne(adata). These use the neighborhood graph (see below) to embed cells so that similar cells cluster together. For example, after sc.pp.neighbors, call sc.tl.umap(adata). Alternative embeddings include diffusion map (sc.tl.diffmap) or force-directed graph (sc.tl.draw_graph), though the latter are less commonly used now.
-
-Latent Embedding (scVI): As an advanced dimensionality reduction, the SCVI model produces a probabilistic latent space. After training SCVI, extract latent = model.get_latent_representation() and store it (e.g. in adata.obsm['X_scVI']). These latent coordinates can be used instead of PCA for UMAP/t-SNE or clustering, often yielding better batch correction or representation of complex structure
-
-## Neighborhood Graph Construction
-Purpose: Build a k-nearest-neighbor graph of cells as input for clustering and visualization.
-sc.pp.neighbors: Compute the kNN graph on the chosen low-dimensional representation (PCA or latent) with sc.pp.neighbors(adata, n_neighbors=15, n_pcs=30). This populates adata.obsp['connectivities'] and adata.obsp['distances']. The graph defines edges between similar cells. Parameters include n_neighbors, distance metric, and which embedding to use (via use_rep or default PCA).
-Graph-based Refinements: Additional options allow customizing neighbor computation (e.g. method='umap' vs 'rapids-ann', etc.), but defaults suffice for most use cases. The neighbors graph underlies downstream UMAP/t-SNE and clustering. For example, sc.pp.neighbors(adata) is typically run before sc.tl.umap(adata)
-
+Purpose: Embed cells into 2D/3D for visualization and as the basis for clustering.
+reduce_dimension: `cds <- reduce_dimension(cds, reduction_method = "UMAP")` builds a UMAP embedding (default) from the PCA/Aligned space, stored in `reducedDims(cds)[["UMAP"]]`. `reduction_method = "tSNE"` is also available. Control it with `umap.n_neighbors`, `umap.min_dist`, `preprocess_method = "PCA"` or `"Aligned"`. Visualize with `plot_cells(cds)`. Reduction requires `preprocess_cds` to have run first.
 
 ## Clustering
-Purpose: Identify groups of similar cells (e.g. cell types or states) in an unsupervised way.
-Leiden Algorithm: A common approach is to use community detection on the kNN graph. Scanpy’s sc.tl.leiden(adata, resolution=1.0, key_added='leiden') partitions cells into clusters (stored in adata.obs['leiden']). Leiden is an improved version of Louvain and requires the neighbors graph to be precomputed. The resolution parameter controls cluster granularity (higher → more clusters).
-Louvain Algorithm: Alternatively, use sc.tl.louvain(adata), which applies the Louvain method. It also depends on sc.pp.neighbors. Both algorithms label clusters in adata.obs.
-Cluster Options: Both Leiden and Louvain can be run with different seeds or restrictions (e.g. restrict_to a subset of obs categories). One can also iterate clustering at multiple resolutions to explore structure.
-Hierarchical Dendrogram (Optional): After clustering, Scanpy can build a dendrogram of cluster relationships with sc.tl.dendrogram(adata, groupby='leiden'), which stores a linkage in adata.uns and can be plotted with sc.pl.dendrogram. This helps interpret cluster similarities.
-Result: The output is a categorical label per cell (e.g. adata.obs['leiden']) representing inferred clusters/cell groups. These are often interpreted as putative cell types or subpopulations.
+Purpose: Identify groups of similar cells (cell types or states) in an unsupervised way.
+cluster_cells: `cds <- cluster_cells(cds, resolution = 1e-3)` runs Leiden/Louvain community detection on the UMAP space and assigns each cell a cluster (`clusters(cds)`) and a partition (`partitions(cds)`). Higher `resolution` → more clusters. It depends on `reduce_dimension`. Retrieve labels with `clusters(cds)` or color them via `plot_cells(cds, color_cells_by = "cluster")`. Partitions are coarse groupings used by trajectory learning.
 
+## Marker Gene Detection
+Purpose: Identify genes that distinguish clusters or annotated groups.
+top_markers: `marker_test <- top_markers(cds, group_cells_by = "cluster", reference_cells = 1000)` returns a data.frame of the most specific marker genes per group, ranked by `marker_score`/`specificity` with `pseudo_R2` and `marker_test_p_value`. `group_cells_by` must be a column in `colData(cds)` (e.g. `"cluster"`, or a cell-type annotation column). Visualize selected markers with `plot_genes_by_group(cds, top_markers$gene_id, group_cells_by = "cluster")`. Results are returned, not stored on the object.
+
+## Differential Expression (regression / model-based)
+Purpose: Test which genes change with a covariate of interest (condition, pseudotime, etc.).
+fit_models: `gene_fits <- fit_models(cds, model_formula_str = "~condition")` fits a generalized linear model per gene; `coefficient_table(gene_fits)` returns effect sizes, p-values, and q-values per term. Subset to genes/celltypes of interest first (`cds_subset <- cds[rowData(cds)$gene_short_name %in% genes, ]`) for speed. This is the model-based DE analog of scanpy's rank_genes_groups and is well-suited to condition/disease contrasts.
 
 ## Trajectory and Pseudotime Analysis
 Purpose: Model continuous developmental or differentiation processes.
-Diffusion Pseudotime (DPT): Scanpy includes sc.tl.dpt(adata, n_dcs=10) to compute a diffusion-based pseudotemporal ordering. One must pick a “root” cell or cluster (often the presumed progenitor); DPT then assigns each cell a pseudotime (adata.obs['dpt_pseudotime']) based on diffusion distance from the root. This creates an ordering reflecting smooth transitions.
-Partition-based Graph Abstraction (PAGA): PAGA computes a coarse-grained connectivity graph between clusters. Using sc.tl.paga(adata, groups='leiden'), one obtains adata.uns['paga'], where edges between clusters have confidence weights. Plotting sc.pl.paga(adata, threshold=0.03) shows a simplified graph of cluster relations. PAGA can also be used to initialize UMAP (sc.tl.umap(adata, init_pos='paga')) for embeddings faithful to overall topology
+learn_graph: `cds <- learn_graph(cds)` fits a principal graph over the UMAP embedding (requires `cluster_cells` first, since it uses partitions).
+order_cells: `cds <- order_cells(cds, root_pr_nodes = <node>)` (or `root_cells = <cell_ids>`) assigns each cell a pseudotime along the learned graph; retrieve with `pseudotime(cds)`. Choose a biologically motivated root (presumed progenitor). Visualize with `plot_cells(cds, color_cells_by = "pseudotime")` and inspect individual genes over pseudotime with `plot_genes_in_pseudotime(cds_subset)`.
+graph_test: `graph_test(cds, neighbor_graph = "principal_graph")` (requires `learn_graph`) finds genes whose expression varies along the trajectory (Moran's I spatial autocorrelation); `neighbor_graph = "knn"` instead tests variation across the kNN graph (requires only `reduce_dimension`). Returns a data.frame with `morans_I`, `p_value`, `q_value`. Co-regulated genes can then be grouped into modules with `find_gene_modules(cds[sig_genes, ])`.
 
-
-## Differential Expression and Marker Gene Detection
-Purpose: Identify genes that are characteristic of clusters or conditions.
-Rank Genes per Group: Use sc.tl.rank_genes_groups to perform marker analysis. Given adata.obs[groupby] (e.g. 'leiden'), this compares each group to others (or pairwise) and ranks genes by statistical tests. Methods include t-test, Welch’s t-test, Wilcoxon, or logistic regression (method='logreg'). For example, sc.tl.rank_genes_groups(adata, 'leiden', method='wilcoxon') fills adata.uns['rank_genes_groups'] with names, scores, p-values, and log-fold changes for top markers of each cluster. One can customize the test (e.g. method='logreg' for sparse markers). Results can be visualized with sc.pl.rank_genes_groups_heatmap or sc.pl.rank_genes_groups_dotplot.
-Logistic Regression (Alternative): Setting method='logreg' performs logistic regression classification for each gene (as in Ntranos et al., 2019). It often yields robust marker sets.
-SCVI Differential Expression: The trained SCVI model provides model.differential_expression, which can test for differentially expressed genes between groups of cells in a probabilistic framework. For example, model.differential_expression(groupby="cell_type", group1="A", group2="B") returns a dataframe of DE statistics. SCVI supports 1-vs-1 or 1-vs-all testing. This method accounts for model uncertainty and can be more powerful in large datasets.
-
-
-## Gene Signature Scoring
-Purpose: Quantify the expression of gene sets (e.g. cell-cycle genes, pathways) per cell.
-General Gene Set Scoring: sc.tl.score_genes(adata, gene_list, score_name="score") computes the average expression of a set of genes (minus average of random reference genes) for each cell. The result is added to adata.obs['score_name']. This can reflect pathway activity or other signatures.
-Cell-Cycle Scoring: A specialized function sc.tl.score_genes_cell_cycle(adata, s_genes, g2m_genes) takes lists of S-phase and G2M-phase marker genes and assigns each cell an S_score, G2M_score, and a categorical phase (G1, S, or G2M). This is useful to regress out or analyze cell-cycle effects.
-Options: Gene lists (e.g. provided with Scanpy, or user-defined) can be passed. The scoring considers control gene sets (by default) to normalize the scores. Cells are labeled by dominant phase if desired.
+## Gene Set / Signature Scoring
+Purpose: Quantify expression of a gene set (pathway, cell-cycle, signature) per cell.
+There is no single monocle3 scoring call; compute it from the expression matrix. Aggregate a gene set with `aggregate_gene_expression(cds, gene_group_df = <data.frame mapping gene_id -> set>)`, or pull the matrix via `exprs(cds)` / `normalized_counts(cds)` and compute a mean (minus a random reference set) per cell with base R / Matrix operations, then store it as a new `colData(cds)$score` column for plotting.
 
 ## Visualization
-Purpose: Plot results (embeddings, marker expression, QC) to interpret data.
-Embedding Plots: sc.pl.umap(adata, color=[...]) or sc.pl.tsne(...) plot the 2D embedding, coloring points by cluster, sample, or gene expression. For example, sc.pl.umap(adata, color=['leiden', 'n_genes_by_counts']). sc.pl.draw_graph (force layout) and sc.pl.paga (PAGA graph) are also available. Many sc.pl functions return Matplotlib axes if show=False.
-QC and Metadata Plots: sc.pl.violin(adata, keys, ...) creates violin plots per group (e.g. distribution of counts or gene expression across clusters). In the QC tutorial, Scanpy shows violin plots of total counts and mitochondrial percentage. sc.pl.scatter(adata, x, y, color=...) makes 2D scatter (e.g. total_counts vs n_genes).
-Marker Gene Plots: Once clusters are defined, visualizing marker genes is key. Common plots include dotplots, heatmaps, and violin plots of cluster markers. For example, sc.pl.dotplot(adata, var_names, groupby='leiden') shows mean expression (color) and percent expressed (dot size) of selected genes per cluster. Similarly, sc.pl.matrixplot is a heatmap variant. The core plotting tutorial demonstrates dotplots and violin plots for cluster markers.
-Gene Expression Distributions: sc.pl.violin(adata, gene_list, groupby='leiden') and sc.pl.stacked_violin show the distribution of one or more genes across clusters.
-Clustered Heatmaps: sc.pl.heatmap can display expression of marker genes across clusters. sc.pl.clustermap (wrapper around Seaborn) can cluster cells/genes in a heatmap, often using raw or log counts.
-Pathway/Gene Set Plots: Custom heatmaps or barplots using Matplotlib/Seaborn can be made from gene scores or DE results (using Pandas/NumPy to extract data). Scanpy’s plots cover most scRNA needs, but any Matplotlib/Seaborn function can be used on data from adata.obs, adata.var, or adata.layers. For example, one might use sns.clustermap on a subset of adata.X.
+Purpose: Plot results (embeddings, marker expression, QC) to interpret data. All plots are ggplot2 objects — print them to render inline.
+plot_cells: the workhorse — `plot_cells(cds, color_cells_by = "cluster")`, `plot_cells(cds, color_cells_by = "pseudotime")`, `plot_cells(cds, genes = c("GENE1", "GENE2"))` (colors by expression, faceted per gene), with `label_groups_by_cluster`, `show_trajectory_graph`, `group_label_size`.
+plot_genes_by_group: dotplot of mean expression × fraction expressing for selected genes across a grouping (cluster/celltype).
+plot_genes_in_pseudotime: expression of selected genes as a function of pseudotime.
+plot_pc_variance_explained / plot_percent_cells_positive: QC and composition.
+For anything custom, extract data from `colData(cds)`, `rowData(cds)`, `reducedDims(cds)`, or `exprs(cds)` into a data.frame and build the figure directly with ggplot2 (`ggplot(...) + geom_*`). Combine multiple panels with patchwork (`p1 + p2`) or `cowplot::plot_grid`. Always print the final plot object so it renders inline.

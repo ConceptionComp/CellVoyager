@@ -1,6 +1,6 @@
 # Spec: Switching CellVoyager from scanpy to monocle3
 
-**Status:** In progress — steps 1–5 complete; steps 6–8 pending
+**Status:** In progress — steps 1–6 complete; steps 7–8 pending
 **Branch:** `monocle3-migration`
 **Source scoping doc:** `~/.claude/plans/can-you-look-at-twinkly-octopus.md`
 
@@ -90,6 +90,40 @@
   `CellVoyager-r` env, `get_documentation("reduce_dimension(cds)")` returns the real
   monocle3 help (~5k chars, clean text); a multi-call blob yields `cluster_cells` +
   `top_markers` docs with `print(...)` correctly filtered out; `py_compile` clean.
+
+- **Step 6 (prompt rewrites) — ✅ DONE.** Rewrote the scanpy/Python prompt content to
+  monocle3/R across `cellvoyager/prompts/`: `coding_guidelines.txt` (rule 7 now "R run
+  through monocle3 inside `%%R`", `{available_packages}` framed as R packages; rules 8–14
+  point at the in-memory `cds` cell_data_set and its accessors — colData/rowData/reducedDims/
+  exprs; the scanpy "API pitfalls" block replaced with monocle3-via-rpy2 pitfalls — workflow
+  ordering deps, return-value reassignment, R accessors/1-indexing, ggplot must be printed);
+  `DeepResearch_Analyses.txt` fully rewritten from the scanpy catalog to the monocle3 workflow
+  catalog (`preprocess_cds`, `reduce_dimension`, `cluster_cells`, `top_markers`, `fit_models`,
+  `learn_graph`/`order_cells`/pseudotime, `graph_test`, `plot_cells`/ggplot2); and the
+  "python code"/"AnnData"/"anndata object" wording in `first_draft.txt`, `next_step.txt`,
+  `next_step_seeded.txt`, `critic.txt`, `incorporate_critque.txt`, `coding_system_prompt.txt`,
+  `deepresearch.txt` swapped to "R (monocle3) code"/"Monocle3 cell_data_set (cds)". The
+  parallel ablation prompts (`ablations/coding_guidelines_NO_VLM_ABLATION.txt`,
+  `critic_NO_DOCUMENTATION.txt`, `analysis_from_hypothesis.txt`) were migrated in lockstep
+  since they're live code paths in `hypothesis.py`/`agent.py`. **Executor code prompts** also
+  done: `execution/legacy.py` `fix_code` system prompt (scanpy API rules → monocle3 rules),
+  its prompt/`code_description` code fences (` ```python `→` ```r `), the two "feedback on
+  Python code" critic system strings → "R (monocle3) code", and `clean_code`'s fence-stripper
+  now also strips ` ```r `/` ```R `; `execution/claude.py` `strip_code_fences` likewise strips
+  R fences. `interp_results.txt`/`summarization.txt` needed no change (no scanpy/Python/adata
+  refs). **Decision — placeholder tokens kept:** the internal `.format()` tokens
+  `{adata_summary}` and `{adata_path}` were **left as-is** (NOT renamed to `{cds_summary}`/
+  `{rds_path}`). These prompt files are *shared* with the unmigrated top-level `legacy/`
+  standalone (`legacy/run.py` → `legacy/agent.py`), which still `.format(adata_summary=…,
+  adata_path=…)`s them; renaming the tokens would hard-crash it with a `KeyError`, and the
+  tokens are internal — never shown to the LLM — so the rename buys nothing. This supersedes
+  the step-4 note that tentatively deferred the token rename to step 6. Hence step 6 is a
+  pure prompt-text change with **zero Python lockstep** (the `.format()` kwargs in `agent.py`,
+  `hypothesis.py`, `deepresearch.py`, and the three executors are untouched). **Verified:**
+  `py_compile` clean on `legacy.py`/`claude.py` (py3.8); `{adata_summary}`/`{adata_path}`
+  tokens still present in every formatted template; a `string.Formatter` brace-stress over all
+  `prompts/**/*.txt` passes (no stray/unescaped braces); residual `scanpy`/`anndata`/`adata`
+  matches are all intentional ("NOT Python/scanpy", "analog of scanpy's rank_genes_groups").
 
 ## 1. Summary
 
@@ -272,6 +306,6 @@ shuttle strings and images and are backend-agnostic.
 3. ✅ **DONE** — Setup cells across the three executors, incl. launching the `cellvoyager-r` kernel (§4.2) — verified on example RDS, inline PNG confirmed (§6.1).
 4. ✅ **DONE** — CLI/param rename `--h5ad-path`→`--rds-path`, `h5ad_path`→`rds_path` through agent + 3 executors + GUI; example-RDS defaults (§4.6).
 5. ✅ **DONE** — Docs helper R-help reimplementation (§4.5) — verified on `reduce_dimension` (§6.3).
-6. Prompt rewrites (§4.4). **← next**
-7. Example/docs updates (§4.7).
+6. ✅ **DONE** — Prompt rewrites (§4.4): scanpy→monocle3/R content across `cellvoyager/prompts/` (+ ablations) and the executor code prompts; placeholder tokens kept (shared with legacy standalone).
+7. Example/docs updates (§4.7). **← next**
 8. End-to-end per executor + fix loop (§6.4, §6.5).
