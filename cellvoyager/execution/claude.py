@@ -32,6 +32,12 @@ from jupyter_client import KernelManager
 from cellvoyager.llm_utils import create_openai_client, has_openai_compatible_config
 
 
+# Jupyter kernel that bridges to R via rpy2. The `cellvoyager-r` kernelspec is a Python
+# ipykernel living in the CellVoyager-r conda env with R_HOME set so rpy2 finds the conda R
+# (system arm64 R crashes on an arch mismatch). Override via env if registered elsewhere.
+CELLVOYAGER_KERNEL_NAME = os.environ.get("CELLVOYAGER_KERNEL_NAME", "cellvoyager-r")
+
+
 # -----------------------------------------------------------------------------
 # Small helpers
 # -----------------------------------------------------------------------------
@@ -63,7 +69,7 @@ class NotebookSession:
         else:
             self.nb = new_notebook()
 
-        self.km = KernelManager()
+        self.km = KernelManager(kernel_name=CELLVOYAGER_KERNEL_NAME)
         self.km.start_kernel(cwd=str(self.path.parent))
         self.kc = self.km.client()
         self.kc.start_channels()
@@ -94,7 +100,7 @@ class NotebookSession:
 
     def restart_kernel(self) -> None:
         self.shutdown()
-        self.km = KernelManager()
+        self.km = KernelManager(kernel_name=CELLVOYAGER_KERNEL_NAME)
         self.km.start_kernel(cwd=str(self.path.parent))
         self.kc = self.km.client()
         self.kc.start_channels()
@@ -893,15 +899,17 @@ class CellVoyagerClaudeRunner:
 
         nb.cells.append(new_markdown_cell(f"# Analysis\n\n**Hypothesis**: {hypothesis}"))
 
-        setup_code = f"""import scanpy as sc
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+        setup_code = f"""# Bridge to R via rpy2; the `%%R` cell magic shares one embedded R process,
+# so `cds` defined here is visible to every later %%R cell.
+%load_ext rpy2.ipython
+import rpy2.robjects as ro
 
+# Load data (Monocle3 cell_data_set). dim(cds) is [genes, cells].
 print("Loading data...")
-adata = sc.read_h5ad(r'''{self.h5ad_path}''')
-print(f"Loaded: {{adata.n_obs}} cells x {{adata.n_vars}} genes")
+ro.r('library(monocle3)')
+ro.r('cds <- readRDS("{self.h5ad_path}")')
+_dims = ro.r('dim(cds)')
+print(f"Loaded: {{int(_dims[1])}} cells x {{int(_dims[0])}} genes")
 """
         nb.cells.append(new_code_cell(setup_code))
         # Defer rendering the plan cell until setup finishes so the UI order is clear.
@@ -963,9 +971,9 @@ You have custom notebook tools. Use them directly.
 {interactive_block}
 
 Required workflow:
-1. Call use_notebook with notebook_path="{notebook_path}" — this automatically runs the setup cell (loads AnnData ONCE per kernel session). Do NOT add or run step 1 until use_notebook returns successfully.
+1. Call use_notebook with notebook_path="{notebook_path}" — this automatically runs the setup cell (loads the Monocle3 cell_data_set ONCE per kernel session). Do NOT add or run step 1 until use_notebook returns successfully.
 2. Add the step 1 markdown summary cell and step 1 code cell (append to end), execute that new code cell, inspect with read_cell, then add a markdown interpretation cell (output summary + whether changing next steps + why).
-   - IMPORTANT: AnnData is already loaded in memory as `adata` by setup. Reuse that in step 1 and all later steps. Do NOT call sc.read_h5ad again.
+   - IMPORTANT: The CDS is already loaded in R as `cds` by setup. Write analysis code as R inside `%%R` cells (the rpy2 magic is loaded) and reuse `cds` in step 1 and all later steps. Do NOT call readRDS again.
 3. For every remaining step in the analysis plan:
    - add a markdown summary cell in this format:
      ## Step N summary - Short summary in header
@@ -993,7 +1001,7 @@ Critical behavior:
 - After each code cell execution, add an interpretation markdown cell covering: what the output shows, whether you are adjusting your next steps, and why.
 - Keep the notebook clean and readable.
 - Do not use hidden scratchpads; put summaries/interpretations in markdown cells.
-- Never re-load the dataset after setup; always reuse the existing `adata` object.
+- Never re-load the dataset after setup; always reuse the existing `cds` object.
 
 Notebook already contains:
 - cell 0: hypothesis markdown
@@ -1007,13 +1015,13 @@ Hypothesis:
 Analysis plan:
 {plan_text}
 
-First step code template (insert this as your step 1 code, adapted to reuse existing `adata`):
-```python
+First step code template (insert this as your step 1 code, adapted to reuse existing `cds` and run as R via `%%R`):
+```r
 {first_step_code}
 ```
 
 Context:
-adata summary: {self.adata_summary[:3000]}
+cds summary: {self.adata_summary[:3000]}
 
 user context (dataset summary / past analyses / focus directions / biological background): {self.paper_summary[:3000]}
 
@@ -1090,7 +1098,7 @@ coding guidelines: {self.coding_guidelines[:3000]}
 You are EXTENDING a completed single-cell analysis with additional steps. The notebook already exists.
 
 Your tasks:
-1. Call use_notebook with notebook_path="{notebook_path}" — this runs the setup cell (loads AnnData)
+1. Call use_notebook with notebook_path="{notebook_path}" — this runs the setup cell (loads the Monocle3 cds)
 2. Before EVERY tool call, call check_user_stop. If pause_requested: true, call pause_for_user_review immediately.
 3. Execute EVERY existing code cell in order to restore kernel state (skip markdown cells)
 4. After restoring kernel state, ACTIVELY ADD NEW analysis steps — the user has asked you to extend this analysis further.
@@ -1099,7 +1107,7 @@ Your tasks:
 7. If pause_for_user_review returns user_feedback exactly "__STOP__", stop immediately.
 8. If pause_for_user_review returns user_feedback exactly "__FINISH__", add one final summary markdown cell then stop.
 
-CRITICAL: You must add new cells and new analyses. Only append (insert_cell with index=None). Do NOT delete or overwrite existing cells. Do NOT call sc.read_h5ad again (adata is already loaded).{feedback_line}
+CRITICAL: You must add new cells and new analyses. Only append (insert_cell with index=None). Do NOT delete or overwrite existing cells. Do NOT call readRDS again (cds is already loaded).{feedback_line}
 """.strip()
         feedback_section = (
             f"\n\nThe user has provided the following feedback to guide your continuation:\n{user_feedback}"
@@ -1109,7 +1117,7 @@ CRITICAL: You must add new cells and new analyses. Only append (insert_cell with
 You are RESUMING a completed single-cell analysis. The notebook already exists with all cells.
 
 Phase 1 — Restore kernel state:
-1. Call use_notebook with notebook_path="{notebook_path}" — this automatically runs the setup cell (loads AnnData)
+1. Call use_notebook with notebook_path="{notebook_path}" — this automatically runs the setup cell (loads the Monocle3 cds)
 2. Before EVERY tool call, call check_user_stop. If pause_requested: true, call pause_for_user_review immediately.
 3. Execute EVERY remaining code cell in the notebook (skip markdown cells) in order to restore kernel state.
 4. After all code cells are executed, call pause_for_user_review to let the user review the notebook.
@@ -1143,10 +1151,10 @@ Required workflow for each new step:
 
 CRITICAL — Step limit: Complete at most {self.max_iterations} NEW interpretation steps. Once you reach {self.max_iterations} new steps, write a final summary markdown and stop.
 
-CRITICAL: Only append new cells (insert_cell with index=None). Do NOT delete or overwrite existing cells. Do NOT call sc.read_h5ad again (adata is already loaded). Do NOT use delete_cell. Only use overwrite_cell_source to fix a code cell YOU just added that failed to run — never overwrite cells the user may have added.
+CRITICAL: Only append new cells (insert_cell with index=None). Do NOT delete or overwrite existing cells. Do NOT call readRDS again (cds is already loaded). Do NOT use delete_cell. Only use overwrite_cell_source to fix a code cell YOU just added that failed to run — never overwrite cells the user may have added.
 
 Context:
-adata summary: {self.adata_summary[:3000]}
+cds summary: {self.adata_summary[:3000]}
 
 user context (dataset summary / past analyses / focus directions / biological background): {self.paper_summary[:3000]}
 

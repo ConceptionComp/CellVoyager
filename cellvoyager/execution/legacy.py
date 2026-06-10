@@ -14,7 +14,12 @@ from jupyter_client import KernelManager
 from cellvoyager.llm_utils import create_json_chat_completion, parse_json_response_text
 from cellvoyager.utils import get_documentation
 
-AVAILABLE_PACKAGES = "scanpy, anndata, matplotlib, numpy, seaborn, pandas, scipy, harmonypy, bbknn"
+AVAILABLE_PACKAGES = "monocle3, SingleCellExperiment, Matrix, ggplot2"
+
+# Jupyter kernel that bridges to R via rpy2. The `cellvoyager-r` kernelspec is a Python
+# ipykernel living in the CellVoyager-r conda env with R_HOME set so rpy2 finds the conda R
+# (system arm64 R crashes on an arch mismatch). Override via env if registered elsewhere.
+CELLVOYAGER_KERNEL_NAME = os.environ.get("CELLVOYAGER_KERNEL_NAME", "cellvoyager-r")
 
 
 def strip_code_markers(text):
@@ -437,7 +442,7 @@ class IdeaExecutor:
     def start_persistent_kernel(self):
         """Start a persistent kernel for efficient cell execution"""
         try:
-            self.kernel_manager = KernelManager(kernel_name="python3")
+            self.kernel_manager = KernelManager(kernel_name=CELLVOYAGER_KERNEL_NAME)
             self.kernel_manager.start_kernel()
             self.kernel_client = self.kernel_manager.client()
             self.kernel_client.start_channels()
@@ -547,30 +552,20 @@ class IdeaExecutor:
         notebook = nbf.v4.new_notebook()
         notebook.cells.append(nbf.v4.new_markdown_cell(f"# Analysis\n\n**Hypothesis**: {hypothesis}"))
 
-        setup_code = f"""import scanpy as sc
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from scipy import stats
+        setup_code = f"""# Bridge to R via rpy2; the `%%R` cell magic shares one embedded R process,
+# so `cds` defined here is visible to every later %%R cell.
+%load_ext rpy2.ipython
 import warnings
+import rpy2.robjects as ro
 
-# Set up visualization defaults for better plots
-sc.settings.verbosity = 3
-sc.settings.figsize = (8, 8)
-sc.settings.dpi = 100
-sc.settings.facecolor = 'white'
 warnings.filterwarnings('ignore')
 
-plt.rcParams['figure.figsize'] = (10, 8)
-plt.rcParams['savefig.dpi'] = 150
-sns.set_style('whitegrid')
-sns.set_context('notebook', font_scale=1.2)
-
-# Load data
+# Load data (Monocle3 cell_data_set). dim(cds) is [genes, cells].
 print("Loading data...")
-adata = sc.read_h5ad("{self.h5ad_path}")
-print(f"Data loaded: {{adata.shape[0]}} cells and {{adata.shape[1]}} genes")
+ro.r('library(monocle3)')
+ro.r('cds <- readRDS("{self.h5ad_path}")')
+_dims = ro.r('dim(cds)')
+print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
 """
         notebook.cells.append(nbf.v4.new_code_cell(setup_code))
 

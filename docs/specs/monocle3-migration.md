@@ -1,6 +1,6 @@
 # Spec: Switching CellVoyager from scanpy to monocle3
 
-**Status:** In progress — steps 1–2 complete; steps 3–8 pending
+**Status:** In progress — steps 1–3 complete; steps 4–8 pending
 **Branch:** `monocle3-migration`
 **Source scoping doc:** `~/.claude/plans/can-you-look-at-twinkly-octopus.md`
 
@@ -24,6 +24,30 @@
   colData columns, reducedDims PCA/Aligned/UMAP, counts assay); `py_compile` clean.
   Note: `self.h5ad_path`/`self.adata_summary` names are intentionally kept — the rename
   is step 4 (§4.6).
+- **Step 3 (setup cells + kernel launch) — ✅ DONE.** Swapped the scanpy/h5ad setup cell
+  for the rpy2/monocle3 shape in all three executors
+  (`legacy.py:create_initial_notebook`, `claude.py:_write_initial_notebook`,
+  `opencode.py:_write_initial_notebook`). New cell: `%load_ext rpy2.ipython`;
+  `import rpy2.robjects as ro`; `ro.r('library(monocle3)')`;
+  `ro.r('cds <- readRDS("<path>")')`; prints `Loaded N cells x N genes` via `dim(cds)`
+  (`dim` is `[genes, cells]`, so cells=`_dims[1]`, genes=`_dims[0]`). The setup cell stays a
+  single Python cell (keeps the executors' one-setup-cell auto-exec logic intact) but uses
+  `ro.r(...)` so `cds` lands in `R_GlobalEnv`, visible to every later `%%R` cell. **Kernel
+  launch:** added a `CELLVOYAGER_KERNEL_NAME` constant (env-overridable, default
+  `cellvoyager-r`) to `legacy.py` and `claude.py`; `legacy.start_persistent_kernel`,
+  `claude.NotebookSession.__init__`, and `claude.restart_kernel` now launch
+  `KernelManager(kernel_name=CELLVOYAGER_KERNEL_NAME)` (opencode reuses claude's
+  `NotebookSession`, so it inherits this). Also flipped `legacy.AVAILABLE_PACKAGES` to the
+  monocle3 set. **Coupled prompt fix:** the *inline* executor prompts that name the setup
+  handle/loader were updated in lockstep (`adata`→`cds`, `sc.read_h5ad`→`readRDS`,
+  "AnnData"→"Monocle3 cell_data_set", code fences `python`→`r`, plus a "write R inside
+  `%%R`, reuse `cds`" instruction) so the executors aren't self-contradictory — the broader
+  prompt-*file* rewrite in `cellvoyager/prompts/` (and `legacy.fix_code`'s scanpy-API
+  system prompt) remains step 6. `notebook_tools.py` was left untouched: it's unused
+  (imported nowhere). **Verified:** launched `KernelManager(kernel_name="cellvoyager-r")`,
+  ran the new setup cell on the example RDS → `Data loaded: 28809 cells and 17465 genes`;
+  a follow-up `%%R plot_cells(cds)` cell rendered **inline as image/png**, confirming `cds`
+  persists across cells and VLM-critical PNG capture works. `py_compile` clean on all three.
 
 ## 1. Summary
 
@@ -101,7 +125,7 @@ discovered while building it (all the "fragile runtime" risks were real):
   `cellvoyager-r` (with the `R_HOME` env), not the current default kernel. Wire this into
   the executor kernel-launch code.
 
-### 4.2 Setup cells in all three executors (the core swap)
+### 4.2 Setup cells in all three executors (the core swap) — ✅ DONE (step 3)
 Replace the scanpy import + `sc.read_h5ad(...)` block in each:
 - `cellvoyager/execution/legacy.py:550-573` — `create_initial_notebook`
 - `cellvoyager/execution/claude.py:896-905` — `_write_initial_notebook`
@@ -203,8 +227,8 @@ shuttle strings and images and are backend-agnostic.
 ## 8. Suggested implementation order
 1. ✅ **DONE** — Environment: `CellVoyager-r` conda env + `rpy2`, inline-PNG verified (§4.1, §6.1).
 2. ✅ **DONE** — Summarizer rewrite + `AVAILABLE_PACKAGES` (§4.3, §4.5) — verified on example RDS (§6.2).
-3. Setup cells across the three executors, incl. launching the `cellvoyager-r` kernel (§4.2). **← next**
-4. CLI/param rename + GUI call site (§4.6).
+3. ✅ **DONE** — Setup cells across the three executors, incl. launching the `cellvoyager-r` kernel (§4.2) — verified on example RDS, inline PNG confirmed (§6.1).
+4. CLI/param rename + GUI call site (§4.6). **← next**
 5. Docs helper R-help reimplementation (§4.5) — verify (§6.3).
 6. Prompt rewrites (§4.4).
 7. Example/docs updates (§4.7).

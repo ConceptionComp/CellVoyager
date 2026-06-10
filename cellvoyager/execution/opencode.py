@@ -116,15 +116,17 @@ class OpenCodeJupyterExecutor:
             )
         )
 
-        setup_code = f"""import scanpy as sc
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+        setup_code = f"""# Bridge to R via rpy2; the `%%R` cell magic shares one embedded R process,
+# so `cds` defined here is visible to every later %%R cell.
+%load_ext rpy2.ipython
+import rpy2.robjects as ro
 
+# Load data (Monocle3 cell_data_set). dim(cds) is [genes, cells].
 print("Loading data...")
-adata = sc.read_h5ad(r'''{self.h5ad_path}''')
-print(f"Loaded: {{adata.n_obs}} cells x {{adata.n_vars}} genes")
+ro.r('library(monocle3)')
+ro.r('cds <- readRDS("{self.h5ad_path}")')
+_dims = ro.r('dim(cds)')
+print(f"Loaded: {{int(_dims[1])}} cells x {{int(_dims[0])}} genes")
 """
         nb.cells.append(new_code_cell(setup_code))
 
@@ -157,13 +159,17 @@ Hypothesis:
 Planned steps:
 {plan_text}
 
+The Monocle3 cell_data_set is already loaded in R as `cds` by the setup cell. Write
+analysis code as R inside `%%R` cells (the rpy2 magic is loaded) and reuse `cds`; do not
+call readRDS again.
+
 Suggested first step code:
-```python
+```r
 {first_step_code}
 ```
 
 Context:
-- adata summary: {self.adata_summary[:3000]}
+- cds summary: {self.adata_summary[:3000]}
 - user context: {self.paper_summary[:3000]}
 - coding guidelines: {self.coding_guidelines[:3000]}
 
