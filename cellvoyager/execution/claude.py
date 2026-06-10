@@ -856,7 +856,7 @@ class CellVoyagerClaudeRunner:
     def __init__(
         self,
         output_dir: str,
-        h5ad_path: str,
+        rds_path: str,
         log_file: str,
         anthropic_api_key: str | None = None,
         adata_summary: str = "",
@@ -872,7 +872,7 @@ class CellVoyagerClaudeRunner:
         self.output_dir = Path(output_dir).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        self.h5ad_path = str(Path(h5ad_path).resolve())
+        self.rds_path = str(Path(rds_path).resolve())
         self.logger = FileLogger(log_file)
         self.adata_summary = adata_summary
         self.paper_summary = paper_summary
@@ -907,7 +907,7 @@ import rpy2.robjects as ro
 # Load data (Monocle3 cell_data_set). dim(cds) is [genes, cells].
 print("Loading data...")
 ro.r('library(monocle3)')
-ro.r('cds <- readRDS("{self.h5ad_path}")')
+ro.r('cds <- readRDS("{self.rds_path}")')
 _dims = ro.r('dim(cds)')
 print(f"Loaded: {{int(_dims[1])}} cells x {{int(_dims[0])}} genes")
 """
@@ -1288,7 +1288,7 @@ class ClaudeJupyterExecutor(CellVoyagerClaudeRunner):
     execute_idea to return past_analyses string instead of notebook path.
     """
 
-    def __init__(self, *, logger, output_dir, h5ad_path, adata_summary, paper_summary,
+    def __init__(self, *, logger, output_dir, rds_path, adata_summary, paper_summary,
                  coding_guidelines, analysis_name, anthropic_api_key,
                  max_iterations=8, max_turns=60, interactive_mode=False, intervene_every=1,
                  execution_model=None, **kwargs):
@@ -1299,7 +1299,7 @@ class ClaudeJupyterExecutor(CellVoyagerClaudeRunner):
         )
         super().__init__(
             output_dir=output_dir,
-            h5ad_path=h5ad_path,
+            rds_path=rds_path,
             log_file=log_file,
             anthropic_api_key=anthropic_api_key,
             adata_summary=adata_summary or "",

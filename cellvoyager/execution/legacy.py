@@ -44,7 +44,7 @@ class IdeaExecutor:
         adata_summary,
         paper_summary,
         logger,
-        h5ad_path,
+        rds_path,
         output_dir,
         analysis_name,
         max_iterations=6,
@@ -65,7 +65,7 @@ class IdeaExecutor:
         self.adata_summary = adata_summary
         self.paper_summary = paper_summary
         self.logger = logger
-        self.h5ad_path = h5ad_path
+        self.rds_path = rds_path
         self.output_dir = output_dir
         self.analysis_name = analysis_name
         self.max_iterations = max_iterations
@@ -563,7 +563,7 @@ warnings.filterwarnings('ignore')
 # Load data (Monocle3 cell_data_set). dim(cds) is [genes, cells].
 print("Loading data...")
 ro.r('library(monocle3)')
-ro.r('cds <- readRDS("{self.h5ad_path}")')
+ro.r('cds <- readRDS("{self.rds_path}")')
 _dims = ro.r('dim(cds)')
 print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
 """

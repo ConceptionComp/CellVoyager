@@ -7,7 +7,12 @@ import argparse
 from pathlib import Path
 from dotenv import load_dotenv
 from cellvoyager.agent import AnalysisAgentV2
-from cellvoyager.llm_utils import get_openai_api_key, has_openai_compatible_config
+from cellvoyager.llm_utils import (
+    get_openai_api_key,
+    get_model_provider,
+    has_provider_config,
+    get_provider_label,
+)
 
 load_dotenv()
 
@@ -17,19 +22,19 @@ def main():
 
     # REQUIRED arguments
     parser.add_argument(
-        "--h5ad-path",
-        default=os.path.join(os.getcwd(), "example/covid19.h5ad"),
-        help="Path to the .h5ad file (default: example/covid19.h5ad)",
+        "--rds-path",
+        default=os.path.join(os.getcwd(), "example/iPSC_dataset/HL052vHL043_PXGL_PXGGA_updated_processed_annotated.RDS"),
+        help="Path to the Monocle3/SCE .RDS file (cell_data_set). Default: example/iPSC_dataset/HL052vHL043_PXGL_PXGGA_updated_processed_annotated.RDS",
     )
     parser.add_argument(
         "--paper-path",
-        default=os.path.join(os.getcwd(), "example/covid19_summary.txt"),
+        default=os.path.join(os.getcwd(), "example/iPSC_dataset/HL052 and HL034 PXGL and PXGGA 10X comparisons.txt"),
         help="Path to context summary text file (dataset summary, prior analyses, focus directions, bio background).",
     )
     parser.add_argument(
         "--analysis-name",
-        default="covid19",
-        help="Name for the analysis (default: covid19)",
+        default="iPSC",
+        help="Name for the analysis (default: iPSC)",
     )
 
     # Execution module selection
@@ -190,10 +195,17 @@ def main():
 
     openai_api_key = get_openai_api_key()
 
-    if args.execution_mode != "claude" and not has_openai_compatible_config(api_key=openai_api_key):
-        print(f"❌ Error: OpenAI-compatible configuration required for --execution-mode {args.execution_mode}")
-        print("Set OPENAI_API_KEY, or point OPENAI_BASE_URL / OPENAI_API_BASE at a local OpenAI-compatible server")
-        return 1
+    if args.execution_mode != "claude":
+        provider = get_model_provider(args.model_name)
+        if provider == "gemini":
+            if not has_provider_config("gemini"):
+                print(f"❌ Error: GEMINI_API_KEY required for model {args.model_name}")
+                print("Set GEMINI_API_KEY in your environment or .env file")
+                return 1
+        elif not has_provider_config("openai") and not openai_api_key:
+            print(f"❌ Error: OpenAI-compatible configuration required for --execution-mode {args.execution_mode}")
+            print("Set OPENAI_API_KEY, or point OPENAI_BASE_URL / OPENAI_API_BASE at a local OpenAI-compatible server")
+            return 1
 
     if args.deepresearch and not os.getenv("OPENAI_API_KEY"):
         print("❌ Error: OPENAI_API_KEY environment variable not set")
@@ -235,7 +247,7 @@ def main():
             "execution_model": args.execution_model or cfg.get("execution_model"),
         }
         agent = AnalysisAgentV2(
-            h5ad_path=cfg["h5ad_path"],
+            rds_path=cfg["rds_path"],
             paper_summary_path=cfg["paper_path"],
             openai_api_key=openai_api_key,
             model_name=cfg.get("model_name", args.model_name),
@@ -278,8 +290,8 @@ def main():
             return 1
 
     # Check if required files exist
-    if not os.path.exists(args.h5ad_path):
-        print(f"❌ Error: H5AD file not found: {args.h5ad_path}")
+    if not os.path.exists(args.rds_path):
+        print(f"❌ Error: RDS file not found: {args.rds_path}")
         return 1
 
     if not os.path.exists(args.paper_path):
@@ -287,7 +299,7 @@ def main():
         return 1
 
     print("🚀 Starting CellVoyager Analysis Agent (v2)")
-    print(f"   H5AD file: {args.h5ad_path}")
+    print(f"   RDS file: {args.rds_path}")
     print(f"   Paper summary: {args.paper_path}")
     print(f"   Analysis name: {args.analysis_name}")
     print(f"   Model: {args.model_name}")
@@ -317,7 +329,7 @@ def main():
         }
 
     agent = AnalysisAgentV2(
-        h5ad_path=args.h5ad_path,
+        rds_path=args.rds_path,
         paper_summary_path=args.paper_path,
         openai_api_key=openai_api_key,
         model_name=args.model_name,

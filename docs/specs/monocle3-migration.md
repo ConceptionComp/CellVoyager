@@ -1,6 +1,6 @@
 # Spec: Switching CellVoyager from scanpy to monocle3
 
-**Status:** In progress — steps 1–3 complete; steps 4–8 pending
+**Status:** In progress — steps 1–4 complete; steps 5–8 pending
 **Branch:** `monocle3-migration`
 **Source scoping doc:** `~/.claude/plans/can-you-look-at-twinkly-octopus.md`
 
@@ -48,6 +48,27 @@
   ran the new setup cell on the example RDS → `Data loaded: 28809 cells and 17465 genes`;
   a follow-up `%%R plot_cells(cds)` cell rendered **inline as image/png**, confirming `cds`
   persists across cells and VLM-critical PNG capture works. `py_compile` clean on all three.
+
+- **Step 4 (CLI/param rename) — ✅ DONE.** Hard-renamed the data-path argument
+  `--h5ad-path` → `--rds-path` (no alias) and the `h5ad_path` parameter/attribute →
+  `rds_path` across the whole pipeline: `run_cellvoyager.py` (arg, `args.rds_path`
+  usages, validation/print messages, both `AnalysisAgentV2(rds_path=…)` call sites, and
+  the resume `cfg["rds_path"]` key), `agent.py` (`AnalysisAgentV2.__init__` param +
+  `self.rds_path` + `_summarize_cds` call + `shared_executor_kwargs`), and all three
+  executors (`legacy.IdeaExecutor`, `claude.NotebookSession`/`ClaudeJupyterExecutor`,
+  `opencode.OpenCodeJupyterExecutor` — param, `self.rds_path`, and the `readRDS("…")`
+  setup-cell interpolation). **Defaults** in `run_cellvoyager.py` now point at the example
+  RDS (`--rds-path` → `example/iPSC_dataset/HL052vHL043_PXGL_PXGGA_updated_processed_annotated.RDS`,
+  `--paper-path` → the matching `…10X comparisons.txt`, `--analysis-name` → `iPSC`).
+  **GUI:** `gui/app.py` launch now passes `--rds-path` and writes `rds_path` in
+  `.run_config.json` (so resume reads the new key). Scope was **path-only by decision** —
+  `adata_summary`/`{adata_summary}` and the GUI's internal `home_h5ad_path` session keys +
+  `.h5ad` file-uploader UX are left for step 6 (prompt placeholders) / step 7 (example data
+  & docs); the `adata_path=` keyword in `coding_guidelines.format(...)` is kept to match the
+  still-unrenamed `{adata_path}` placeholder. `cellvoyager/_assemble_h5ad.py` is the
+  RDS→h5ad converter and legitimately keeps its `h5ad` names. **Verified:** `py_compile`
+  clean on all six touched files; `grep h5ad_path` over `cellvoyager/` + `run_cellvoyager.py`
+  is empty (excluding the converter).
 
 ## 1. Summary
 
@@ -183,7 +204,7 @@ In `cellvoyager/prompts/`:
   rpy2** for monocle3 functions (e.g. capture `?function` / `help` text through rpy2), so
   the fix loop keeps a working docs section.
 
-### 4.6 CLI and naming (hard rename)
+### 4.6 CLI and naming (hard rename) — ✅ DONE (step 4)
 - `run_cellvoyager.py:24-28` — rename `--h5ad-path` → `--rds-path` (no alias).
 - Rename the `h5ad_path` parameter threaded through `AnalysisAgentV2` (`agent.py`) and all
   three executors → `data_path` (or `rds_path`; pick one and keep consistent).
@@ -228,8 +249,8 @@ shuttle strings and images and are backend-agnostic.
 1. ✅ **DONE** — Environment: `CellVoyager-r` conda env + `rpy2`, inline-PNG verified (§4.1, §6.1).
 2. ✅ **DONE** — Summarizer rewrite + `AVAILABLE_PACKAGES` (§4.3, §4.5) — verified on example RDS (§6.2).
 3. ✅ **DONE** — Setup cells across the three executors, incl. launching the `cellvoyager-r` kernel (§4.2) — verified on example RDS, inline PNG confirmed (§6.1).
-4. CLI/param rename + GUI call site (§4.6). **← next**
-5. Docs helper R-help reimplementation (§4.5) — verify (§6.3).
+4. ✅ **DONE** — CLI/param rename `--h5ad-path`→`--rds-path`, `h5ad_path`→`rds_path` through agent + 3 executors + GUI; example-RDS defaults (§4.6).
+5. Docs helper R-help reimplementation (§4.5) — verify (§6.3). **← next**
 6. Prompt rewrites (§4.4).
 7. Example/docs updates (§4.7).
 8. End-to-end per executor + fix loop (§6.4, §6.5).

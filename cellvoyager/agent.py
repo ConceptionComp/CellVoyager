@@ -19,7 +19,7 @@ AVAILABLE_PACKAGES = "monocle3, SingleCellExperiment, Matrix, ggplot2"
 class AnalysisAgentV2:
     def __init__(
         self,
-        h5ad_path,
+        rds_path,
         paper_summary_path,
         model_name,
         analysis_name,
@@ -50,7 +50,7 @@ class AnalysisAgentV2:
             **execution_kwargs: Passed to ClaudeJupyterExecutor when execution_mode="claude",
                 e.g. jupyter_port=8888, auto_start_jupyter=True, stop_jupyter_on_complete=False.
         """
-        self.h5ad_path = h5ad_path
+        self.rds_path = rds_path
         self.paper_summary = open(paper_summary_path).read()
         self.openai_api_key = openai_api_key
         self.model_name = model_name
@@ -101,7 +101,7 @@ class AnalysisAgentV2:
 
         self.coding_guidelines = coding_guidelines_template.format(
             name=self.analysis_name,
-            adata_path=self.h5ad_path,
+            adata_path=self.rds_path,
             available_packages=AVAILABLE_PACKAGES,
             analyses_overview=self._analyses_overview,
         )
@@ -111,12 +111,12 @@ class AnalysisAgentV2:
         # Load the Monocle3 cell_data_set (.RDS) and build a text summary for planning.
         # This runs in the orchestrator process via rpy2 (not the Jupyter kernel), so
         # _summarize_cds points R_HOME at this env's R before importing rpy2.
-        if self.h5ad_path == "":
+        if self.rds_path == "":
             self.adata_summary = ""
         else:
             print("Loading CDS (.RDS) for summarization via rpy2...")
-            self.adata_summary = self._summarize_cds(self.h5ad_path)
-            print(f"✅ Loaded summary from {self.h5ad_path}")
+            self.adata_summary = self._summarize_cds(self.rds_path)
+            print(f"✅ Loaded summary from {self.rds_path}")
 
         # DeepResearch for idea generation
         self.deepresearch_background = ""
@@ -163,7 +163,7 @@ class AnalysisAgentV2:
             adata_summary=self.adata_summary,
             paper_summary=self.paper_summary,
             logger=self.logger,
-            h5ad_path=self.h5ad_path,
+            rds_path=self.rds_path,
             output_dir=self.output_dir,
             analysis_name=self.analysis_name,
             max_iterations=self.max_iterations,

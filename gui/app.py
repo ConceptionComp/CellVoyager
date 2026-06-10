@@ -1017,7 +1017,7 @@ context_source: structured_fields
         _LAST_RUN_FILE.write_text(st.session_state.run_output_dir, encoding="utf-8")
         (run_output_dir / _RUN_INTERACTIVE_FILE).write_text("1" if _interactive_mode else "0", encoding="utf-8")
         run_config = {
-            "h5ad_path": str(h5ad_path),
+            "rds_path": str(h5ad_path),
             "paper_path": str(paper_path),
             "analysis_name": _analysis_name,
             "execution_mode": "claude",
@@ -1032,7 +1032,7 @@ context_source: structured_fields
         (run_output_dir / g._RUN_CONFIG_FILE).write_text(json.dumps(run_config), encoding="utf-8")
         cmd = [
             sys.executable, str(ROOT / "run_cellvoyager.py"),
-            "--h5ad-path", str(h5ad_path),
+            "--rds-path", str(h5ad_path),
             "--paper-path", str(paper_path),
             "--analysis-name", _analysis_name,
             "--num-analyses", str(_num_analyses),

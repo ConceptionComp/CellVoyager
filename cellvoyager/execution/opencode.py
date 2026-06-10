@@ -65,7 +65,7 @@ class OpenCodeJupyterExecutor:
         *,
         logger,
         output_dir,
-        h5ad_path,
+        rds_path,
         adata_summary,
         paper_summary,
         coding_guidelines,
@@ -87,7 +87,7 @@ class OpenCodeJupyterExecutor:
         self.logger = FileLogger(log_file)
         self.output_dir = Path(output_dir).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.h5ad_path = str(Path(h5ad_path).resolve())
+        self.rds_path = str(Path(rds_path).resolve())
         self.adata_summary = adata_summary or ""
         self.paper_summary = paper_summary or ""
         self.coding_guidelines = coding_guidelines or ""
@@ -124,7 +124,7 @@ import rpy2.robjects as ro
 # Load data (Monocle3 cell_data_set). dim(cds) is [genes, cells].
 print("Loading data...")
 ro.r('library(monocle3)')
-ro.r('cds <- readRDS("{self.h5ad_path}")')
+ro.r('cds <- readRDS("{self.rds_path}")')
 _dims = ro.r('dim(cds)')
 print(f"Loaded: {{int(_dims[1])}} cells x {{int(_dims[0])}} genes")
 """
