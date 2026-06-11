@@ -48,6 +48,7 @@ dependencies:
   - bioconductor-summarizedexperiment
   - r-matrix
   - r-ggplot2
+  - r-patchwork        # common ggplot2 companion the LLM reaches for (multi-panel plots)
 
   # --- Python orchestrator runtime ---
   - numpy

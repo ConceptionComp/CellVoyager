@@ -1,6 +1,8 @@
 # CellVoyager User Guide
 
-CellVoyager is an AI agent for automated single-cell RNA sequencing (scRNA-seq) analysis. You give it a dataset and biological context; it generates hypotheses, writes Python analysis code, executes it in a Jupyter notebook, and iterates — producing a fully documented notebook you can explore, extend, and build on.
+CellVoyager is an AI agent for automated single-cell RNA sequencing (scRNA-seq) analysis. You give it a dataset and biological context; it generates hypotheses, writes R (monocle3) analysis code, executes it in a Jupyter notebook, and iterates — producing a fully documented notebook you can explore, extend, and build on.
+
+CellVoyager's analysis backend is **monocle3 in R**, bridged into the Python Jupyter kernel via **`rpy2`** (the LLM writes R through the `%%R` cell magic / `rpy2.robjects`). There is no Python monocle3. Input data is a native Monocle3/SCE **`.RDS`** file (a `cell_data_set`, canonical handle `cds`).
 
 This guide covers everything you need to run CellVoyager from the terminal using **legacy mode**, which works with local models via LM Studio and with Google Gemini.
 
@@ -16,8 +18,7 @@ This guide covers everything you need to run CellVoyager from the terminal using
     - [Option A: Local Models via LM Studio](#option-a-local-models-via-lm-studio)
     - [Option B: Google Gemini](#option-b-google-gemini)
   - [Preparing Your Inputs](#preparing-your-inputs)
-    - [The Dataset File (.h5ad)](#the-dataset-file-h5ad)
-    - [Converting an RDS to h5ad](#converting-an-rds-to-h5ad)
+    - [The Dataset File (.RDS)](#the-dataset-file-rds)
     - [The Dataset Summary File](#the-dataset-summary-file)
   - [Running an Analysis](#running-an-analysis)
     - [Minimal Command](#minimal-command)
@@ -26,8 +27,8 @@ This guide covers everything you need to run CellVoyager from the terminal using
   - [Logging](#logging)
     - [Additional logging flags](#additional-logging-flags)
   - [Understanding Your Outputs](#understanding-your-outputs)
-  - [Worked Example: COVID-19 Dataset](#worked-example-covid-19-dataset)
-    - [Step 1: Download the dataset](#step-1-download-the-dataset)
+  - [Worked Example: iPSC Dataset](#worked-example-ipsc-dataset)
+    - [Step 1: Locate the example dataset](#step-1-locate-the-example-dataset)
     - [Step 2: Run with Gemini](#step-2-run-with-gemini)
     - [Step 3: Run with a local model via LM Studio](#step-3-run-with-a-local-model-via-lm-studio)
     - [Step 4: Run interactively with logging](#step-4-run-interactively-with-logging)
@@ -36,7 +37,7 @@ This guide covers everything you need to run CellVoyager from the terminal using
     - ["OpenAI-compatible configuration required"](#openai-compatible-configuration-required)
     - [LM Studio: connection refused or no response](#lm-studio-connection-refused-or-no-response)
     - [Gemini: 401 or "API key not valid"](#gemini-401-or-api-key-not-valid)
-    - [H5AD or paper file not found](#h5ad-or-paper-file-not-found)
+    - [RDS or paper file not found](#rds-or-paper-file-not-found)
     - [Analysis produces generic or irrelevant results](#analysis-produces-generic-or-irrelevant-results)
     - [Code execution errors (agent keeps failing the same step)](#code-execution-errors-agent-keeps-failing-the-same-step)
 
@@ -46,12 +47,12 @@ This guide covers everything you need to run CellVoyager from the terminal using
 
 CellVoyager runs a two-phase loop for each analysis:
 
-1. **Hypothesis generation** — The LLM reads your dataset metadata and biological summary, then proposes a specific analysis idea (e.g. "compare NK cell subsets between severe and mild COVID-19 patients using differential expression").
-2. **Code execution** — The agent writes Python code using scanpy, seaborn, pandas, and related packages, runs it in a Jupyter kernel, checks the output, fixes errors, and iterates up to a configurable number of steps.
+1. **Hypothesis generation** — The LLM reads your dataset metadata and biological summary, then proposes a specific analysis idea (e.g. "compare pluripotency programs between PXGL and PXGGA conditions using differential expression").
+2. **Code execution** — The agent writes R code using monocle3 (executed in a Python Jupyter kernel via rpy2's `%%R` magic, operating on the in-memory `cds`), runs it, checks the output, fixes errors, and iterates up to a configurable number of steps.
 
 At the end of each analysis you get a Jupyter notebook (`.ipynb`) with all code, figures, and interpretations. You can run multiple independent analyses in one command, each exploring a different biological angle.
 
-**Available packages:** scanpy, anndata, matplotlib, numpy, seaborn, pandas, scipy, harmonypy, bbknn
+**Available R packages:** monocle3, SingleCellExperiment, Matrix, ggplot2
 
 ---
 
@@ -62,9 +63,13 @@ Clone the repository and create the conda environment:
 ```bash
 git clone https://github.com/zou-group/CellVoyager.git
 cd CellVoyager
-conda env create -f environment.yml
-conda activate CellVoyager
+conda env create -f environment-monocle3.yml
+conda activate CellVoyager-r
 ```
+
+`environment-monocle3.yml` builds a single env (`CellVoyager-r`) that bundles both the
+Python orchestrator and the R monocle3 backend, bridged with `rpy2`. **Do not use system
+R** — it segfaults loading monocle3's native modules; the conda env ships a compatible R.
 
 ---
 
@@ -127,47 +132,31 @@ Available Gemini models:
 
 ## Preparing Your Inputs
 
-### The Dataset File (.h5ad)
+### The Dataset File (.RDS)
 
-CellVoyager reads AnnData `.h5ad` files — the standard format for scRNA-seq data in Python. If your data is in R (Seurat or Monocle3), convert it first (see [Converting an RDS to h5ad](#converting-an-rds-to-h5ad)).
+CellVoyager reads a Monocle3 `cell_data_set` (CDS) saved as an `.RDS` file — the native
+object for single-cell analysis in monocle3. A Bioconductor `SingleCellExperiment` saved as
+`.RDS` also works, since a CDS extends `SingleCellExperiment`.
 
-The agent automatically extracts:
+The agent loads it once into the R session as `cds` (via `readRDS`) and automatically
+summarizes:
 
-- Cell metadata (`obs` columns: cell types, conditions, donors, etc.)
-- Gene names (`var`)
-- Embeddings (`obsm`: UMAP, PCA, etc.)
-- Any pre-computed results stored in `uns`
+- Cell metadata (`colData` — cell types, conditions, donors, etc.)
+- Gene metadata (`rowData` / `fData` — including `gene_short_name` if present)
+- Embeddings (`reducedDims` — UMAP, PCA, Aligned, etc.)
+- Expression matrices (`assays` — e.g. `counts`)
 
-No preprocessing required — just point to the file.
+No preprocessing or format conversion is required — just point `--rds-path` at the file.
 
-### Converting an RDS to h5ad
+> **Coming from an `.h5ad`?** CellVoyager no longer reads AnnData directly. Convert your
+> object to a Monocle3/SCE `.RDS` first (e.g. build a `cell_data_set` with
+> `monocle3::new_cell_data_set(...)` in R and `saveRDS` it). The repo also ships the reverse
+> converter (`cellvoyager/rds_to_h5ad.R`) for exporting an RDS back to `.h5ad`, which is not
+> needed for running CellVoyager.
 
-If your data lives in an `.RDS` file (a Monocle3 `cell_data_set` or a Bioconductor `SingleCellExperiment`), convert it with the helper utility in this repo:
-
-- [`cellvoyager/rds_to_h5ad.R`](../cellvoyager/rds_to_h5ad.R) — reads the object and exports its matrix, cell/gene metadata, and embeddings
-- [`cellvoyager/_assemble_h5ad.py`](../cellvoyager/_assemble_h5ad.py) — assembles those pieces into the `.h5ad`
-
-The conversion runs in its own conda environment (kept separate from the main `CellVoyager` env). Create it once from the spec in this repo:
-
-```bash
-conda env create -f environment-rds2h5ad.yml
-```
-
-Then run the conversion:
-
-```bash
-conda activate rds2h5ad
-export RDS2H5AD_PYTHON="$(which python)"   # the env's python (has anndata)
-Rscript cellvoyager/rds_to_h5ad.R <input.RDS> <output.h5ad> [X_assay_name]
-```
-
-The result preserves the count matrix (`X`), cell metadata (`obs`), gene metadata (`var`), and reduced-dimension embeddings (`obsm`, e.g. `X_pca`, `X_umap`).
-
-> **Why a dedicated env?** On some machines the system R segfaults loading the `monocle3` / `RcppAnnoy` native modules. The isolated env plus the stub-class trick in `rds_to_h5ad.R` lets `readRDS` reconstruct the object without ever loading those packages.
->
-> **Seurat objects** are not handled by this utility — convert those with `SeuratDisk` or `sceasy` instead.
-
-**Note on gene names:** if your object uses Ensembl IDs as row names, those become `var_names` (the gene index), with gene symbols available in a `var` column such as `gene_short_name`.
+**Note on gene names:** monocle3 conventionally stores gene symbols in a `rowData` column
+named `gene_short_name`, while the row names are often Ensembl IDs. Mention in your dataset
+summary which one to use so the agent references genes correctly.
 
 ### The Dataset Summary File
 
@@ -182,7 +171,7 @@ The dataset summary is a plain `.txt` file that tells the agent what your data c
 - Specific biological questions or pathways you want explored
 - Any relevant background from the paper or prior knowledge
 
-**Format:** Free text, organized into paragraphs or labeled sections. Length of 300–1000 words works well. See the [worked example](#worked-example-covid-19-dataset) for a real example.
+**Format:** Free text, organized into paragraphs or labeled sections. Length of 300–1000 words works well. See the [worked example](#worked-example-ipsc-dataset) for a real example.
 
 ---
 
@@ -194,7 +183,7 @@ The dataset summary is a plain `.txt` file that tells the agent what your data c
 python run_cellvoyager.py \
   --execution-mode legacy \
   --model-name MODEL_NAME \
-  --h5ad-path path/to/data.h5ad \
+  --rds-path path/to/data.RDS \
   --paper-path path/to/summary.txt \
   --analysis-name my_analysis
 ```
@@ -203,24 +192,24 @@ Replace `MODEL_NAME` with your model (e.g. `gemini-2.5-flash` or `google/gemma-4
 
 ### All Flags Reference
 
-| Flag                 | Default                       | Description                                                                             |
-| -------------------- | ----------------------------- | --------------------------------------------------------------------------------------- |
-| `--execution-mode`   | `claude`                      | Must be `legacy` for this guide                                                         |
-| `--model-name`       | `claude-sonnet-4-6`           | LLM for hypothesis generation and code writing                                          |
-| `--h5ad-path`        | `example/covid19.h5ad`        | Path to your `.h5ad` dataset                                                            |
-| `--paper-path`       | `example/covid19_summary.txt` | Path to your dataset summary `.txt` file                                                |
-| `--analysis-name`    | `covid19`                     | Name for this run; used in output and log filenames                                     |
-| `--num-analyses`     | `1`                           | Number of independent analyses to run sequentially                                      |
-| `--max-iterations`   | `8`                           | Max code-generation steps per analysis                                                  |
-| `--max-fix-attempts` | `3`                           | Max retries per step when code fails                                                    |
-| `--interactive`      | off                           | Pause before each prompt for review/editing (see [Interactive Mode](#interactive-mode)) |
-| `--log-prompts`      | off                           | Log full prompts sent to the LLM                                                        |
-| `--log-responses`    | off                           | Save each LLM response as a separate `.txt` file                                        |
-| `--no-self-critique` | off                           | Disable the agent's self-evaluation step                                                |
-| `--no-vlm`           | off                           | Disable vision/image analysis                                                           |
-| `--no-documentation` | off                           | Disable automatic code documentation                                                    |
-| `--output-home`      | `.`                           | Base directory for the `outputs/` folder                                                |
-| `--log-home`         | `.`                           | Base directory for the `logs/` folder                                                   |
+| Flag                 | Default                                                                              | Description                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `--execution-mode`   | `claude`                                                                             | Must be `legacy` for this guide                                                         |
+| `--model-name`       | `claude-sonnet-4-6`                                                                  | LLM for hypothesis generation and code writing                                          |
+| `--rds-path`         | `example/iPSC_dataset/HL052vHL043_PXGL_PXGGA_updated_processed_annotated.RDS`        | Path to your Monocle3/SCE `.RDS` dataset                                                |
+| `--paper-path`       | `example/iPSC_dataset/HL052 and HL034 PXGL and PXGGA 10X comparisons.txt`            | Path to your dataset summary `.txt` file                                                |
+| `--analysis-name`    | `iPSC`                                                                               | Name for this run; used in output and log filenames                                     |
+| `--num-analyses`     | `1`                                                                                  | Number of independent analyses to run sequentially                                      |
+| `--max-iterations`   | `8`                                                                                  | Max code-generation steps per analysis                                                  |
+| `--max-fix-attempts` | `3`                                                                                  | Max retries per step when code fails                                                    |
+| `--interactive`      | off                                                                                  | Pause before each prompt for review/editing (see [Interactive Mode](#interactive-mode)) |
+| `--log-prompts`      | off                                                                                  | Log full prompts sent to the LLM                                                        |
+| `--log-responses`    | off                                                                                  | Save each LLM response as a separate `.txt` file                                        |
+| `--no-self-critique` | off                                                                                  | Disable the agent's self-evaluation step                                                |
+| `--no-vlm`           | off                                                                                  | Disable vision/image analysis                                                           |
+| `--no-documentation` | off                                                                                  | Disable automatic code documentation                                                    |
+| `--output-home`      | `.`                                                                                  | Base directory for the `outputs/` folder                                                |
+| `--log-home`         | `.`                                                                                  | Base directory for the `logs/` folder                                                   |
 
 ---
 
@@ -266,7 +255,7 @@ python run_cellvoyager.py \
   --model-name gemini-2.5-flash \
   --log-prompts \
   --log-responses \
-  --h5ad-path path/to/data.h5ad \
+  --rds-path path/to/data.RDS \
   --paper-path path/to/summary.txt \
   --analysis-name my_run
 ```
@@ -303,28 +292,28 @@ logs/
 - Re-run or modify individual cells
 - Extend the analysis manually
 
+The notebook's code cells are R run through rpy2 (`%%R`) against the loaded `cds`. To
+re-run them yourself, open the notebook with the `cellvoyager-r` kernel.
+
 **The trace log** is useful for understanding what the agent decided at each step — which hypotheses it considered, what code it wrote, what errors it encountered, and how it recovered.
 
 ---
 
-## Worked Example: COVID-19 Dataset
+## Worked Example: iPSC Dataset
 
-This example uses the COVID-19 peripheral blood dataset from [Wilk et al. 2020](https://www.nature.com/articles/s41591-020-0944-y).
+This example uses the iPSC Monocle3 `cell_data_set` that ships with the repo, comparing PXGL
+and PXGGA culture conditions across two cell lines (HL052 / HL043).
 
-### Step 1: Download the dataset
+### Step 1: Locate the example dataset
 
-```bash
-curl -o example/covid19.h5ad "https://hosted-matrices-prod.s3-us-west-2.amazonaws.com/Single_cell_atlas_of_peripheral_immune_response_to_SARS_CoV_2_infection-25/Single_cell_atlas_of_peripheral_immune_response_to_SARS_CoV_2_infection.h5ad"
-```
+No download is needed — the dataset and its summary are already in the repo and are the CLI
+defaults:
 
-The dataset summary is already included at `example/covid19_summary.txt`. It contains:
+- `example/iPSC_dataset/HL052vHL043_PXGL_PXGGA_updated_processed_annotated.RDS` — the CDS
+- `example/iPSC_dataset/HL052 and HL034 PXGL and PXGGA 10X comparisons.txt` — the dataset summary
 
-- Biological background on severe COVID-19 and ARDS
-- Description of the 44,721 peripheral blood cells and 8 donors
-- Summary of prior computational analyses (clustering, DE, RNA velocity)
-- Specific hypotheses about monocyte–T cell communication and interferon signaling
-
-This is a good template for writing your own summary.
+The summary describes the experimental conditions, cell counts, prior analyses, and the
+biological questions worth exploring. It's a good template for writing your own summary.
 
 ### Step 2: Run with Gemini
 
@@ -334,10 +323,13 @@ export GEMINI_API_KEY=your_key_here
 python run_cellvoyager.py \
   --execution-mode legacy \
   --model-name gemini-2.5-flash \
-  --h5ad-path example/covid19.h5ad \
-  --paper-path example/covid19_summary.txt \
-  --analysis-name covid19_test
+  --rds-path "example/iPSC_dataset/HL052vHL043_PXGL_PXGGA_updated_processed_annotated.RDS" \
+  --paper-path "example/iPSC_dataset/HL052 and HL034 PXGL and PXGGA 10X comparisons.txt" \
+  --analysis-name iPSC_test
 ```
+
+(These paths are the defaults, so you can omit both `--rds-path` and `--paper-path` to run the
+same example.)
 
 ### Step 3: Run with a local model via LM Studio
 
@@ -348,9 +340,9 @@ export OPENAI_API_KEY=local
 python run_cellvoyager.py \
   --execution-mode legacy \
   --model-name google/gemma-4-27b-it \
-  --h5ad-path example/covid19.h5ad \
-  --paper-path example/covid19_summary.txt \
-  --analysis-name covid19_local
+  --rds-path "example/iPSC_dataset/HL052vHL043_PXGL_PXGGA_updated_processed_annotated.RDS" \
+  --paper-path "example/iPSC_dataset/HL052 and HL034 PXGL and PXGGA 10X comparisons.txt" \
+  --analysis-name iPSC_local
 ```
 
 ### Step 4: Run interactively with logging
@@ -364,9 +356,9 @@ python run_cellvoyager.py \
   --interactive \
   --log-prompts \
   --log-responses \
-  --h5ad-path example/covid19.h5ad \
-  --paper-path example/covid19_summary.txt \
-  --analysis-name covid19_interactive
+  --rds-path "example/iPSC_dataset/HL052vHL043_PXGL_PXGGA_updated_processed_annotated.RDS" \
+  --paper-path "example/iPSC_dataset/HL052 and HL034 PXGL and PXGGA 10X comparisons.txt" \
+  --analysis-name iPSC_interactive
 ```
 
 ### What to expect
@@ -375,17 +367,17 @@ The agent will print its progress to the terminal. A typical run looks like:
 
 ```
 🚀 Starting CellVoyager Analysis Agent (v2)
-   H5AD file: example/covid19.h5ad
+   RDS file: example/iPSC_dataset/HL052vHL043_PXGL_PXGGA_updated_processed_annotated.RDS
    ...
 🔬 Running analyses...
 [Hypothesis generation] Generating hypothesis for analysis 1...
-[Execution] Step 1/8: Loading data and computing QC metrics...
+[Execution] Step 1/8: Loading the cell_data_set and computing QC metrics...
 [Execution] Step 2/8: UMAP visualization by cell type and condition...
 ...
 ✅ Analysis complete!
 ```
 
-Open `outputs/covid19_test_<timestamp>/covid19_test_analysis_1.ipynb` in Jupyter to see the results.
+Open `outputs/iPSC_test_<timestamp>/iPSC_test_analysis_1.ipynb` in Jupyter to see the results.
 
 ---
 
@@ -431,16 +423,16 @@ The agent hangs or errors with a connection message.
 echo $GEMINI_API_KEY
 ```
 
-### H5AD or paper file not found
+### RDS or paper file not found
 
 ```
-❌ Error: H5AD file not found: path/to/data.h5ad
+❌ Error: RDS file not found: path/to/data.RDS
 ```
 
 **Fix:** Use the absolute path or verify the relative path from the `CellVoyager/` directory:
 
 ```bash
-ls path/to/data.h5ad   # confirm the file exists
+ls path/to/data.RDS   # confirm the file exists
 ```
 
 ### Analysis produces generic or irrelevant results
@@ -451,7 +443,7 @@ The agent generates hypotheses it has seen before or ignores key aspects of your
 
 - Add specific cell types, conditions, and comparisons present in your dataset
 - List analyses you've already done so the agent doesn't repeat them
-- Add explicit biological questions: _"I want to understand why CD16+ monocytes are depleted in ARDS patients"_
+- Add explicit biological questions: _"I want to understand which genes drive the PXGL vs PXGGA difference in naive pluripotency"_
 - Include relevant pathway names or gene sets you care about
 
 ### Code execution errors (agent keeps failing the same step)
@@ -463,4 +455,4 @@ The agent hits `max-fix-attempts` (default 3) and moves on or stops.
 - Run with `--interactive` to review the failing code at each step and give corrective feedback
 - Run with `--log-prompts` to inspect what context the agent had when it wrote the failing code
 - Increase `--max-fix-attempts 5` to give the agent more retries
-- If a specific package is missing, install it in the `CellVoyager` conda environment and restart
+- monocle3 is R-only and the model is less fluent in it than in Python — expect more early fix-loop activity. If a specific R package is missing, install it into the `CellVoyager-r` conda environment and restart

@@ -1,6 +1,9 @@
 # Spec: Switching CellVoyager from scanpy to monocle3
 
-**Status:** In progress — steps 1–6 complete; steps 7–8 pending
+**Status:** Steps 1–8 complete for the **legacy** executor (end-to-end verified on
+legacy+Gemini; two integration bugs found & fixed — see step-8 entry). claude/opencode
+share the same fixes (applied + `py_compile` clean) but are **end-to-end unverified** here
+(no `ANTHROPIC_API_KEY` / no local OpenAI-compatible server in this environment).
 **Branch:** `monocle3-migration`
 **Source scoping doc:** `~/.claude/plans/can-you-look-at-twinkly-octopus.md`
 
@@ -124,6 +127,63 @@
   tokens still present in every formatted template; a `string.Formatter` brace-stress over all
   `prompts/**/*.txt` passes (no stray/unescaped braces); residual `scanpy`/`anndata`/`adata`
   matches are all intentional ("NOT Python/scanpy", "analog of scanpy's rank_genes_groups").
+
+- **Step 7 (example data & docs) — ✅ DONE.** Updated the four user-facing docs from
+  scanpy/h5ad to monocle3/RDS. **`README.md`:** install block → `environment-monocle3.yml` /
+  `conda activate CellVoyager-r` (+ a one-line note that the backend is monocle3-in-R via
+  rpy2); GUI dataset row → ".RDS Monocle3 `cell_data_set`"; Terminal usage + the legacy/
+  opencode local-model examples → `--rds-path PATH_TO_RDS_DATASET`; arg table `--h5ad-path`
+  row → `--rds-path`; the Example section rewritten from the COVID-19 `curl` download to the
+  in-repo iPSC RDS (now the CLI defaults); demo note → "example iPSC Monocle3 cell_data_set".
+  **`QS.md`:** rewritten — env name + every `--h5ad-path example/…h5ad` → `--rds-path
+  "example/iPSC_dataset/…RDS"` (and `~/miniconda3/envs/CellVoyager` → `…/CellVoyager-r`).
+  **`AGENTS.md`:** new lead Project-State bullet describing the monocle3/rpy2 backend, `.RDS`
+  input, `--rds-path`, the `CellVoyager-r` env (no system R) and the spec link; the GUI
+  "raw `.h5ad` stays local" line → `.RDS`; the `environment.yml`/markdown bullet → points at
+  `environment-monocle3.yml` (env `CellVoyager-r`). **`docs/user-guide.md`:** intro + "What
+  CellVoyager Does" rewritten (writes R/monocle3 via rpy2 `%%R` on `cds`; available-packages
+  line → `monocle3, SingleCellExperiment, Matrix, ggplot2`); "The Dataset File (.h5ad)" →
+  "(.RDS)" describing colData/rowData/reducedDims/assays + a "coming from an h5ad?" note; the
+  old "Converting an RDS to h5ad" subsection dropped (RDS is now native) and TOC updated; flag
+  table `--h5ad-path`→`--rds-path` with iPSC defaults; all command examples + the worked
+  example (COVID download → in-repo iPSC dataset) + expected-output "RDS file:" + the "RDS or
+  paper file not found" troubleshooting + `CellVoyager-r` env in the fix-loop tip. **Verified:**
+  `grep -in 'h5ad|scanpy|anndata|covid19|HFTA|seaborn|--h5ad-path'` over the four files is
+  clean except two intentional `.h5ad` mentions in user-guide.md (the "coming from an h5ad"
+  conversion note + the reverse `rds_to_h5ad.R` converter pointer).
+
+- **Step 8 (end-to-end + fix loop) — ✅ DONE for legacy (claude/opencode unverified).**
+  Ran `run_cellvoyager.py --execution-mode legacy --model-name gemini-2.5-flash` on the
+  example iPSC RDS (1 analysis, 2 iterations) in the `CellVoyager-r` env. The smoke test
+  surfaced **two integration bugs no per-component check could have caught**, both fixed:
+  - **Bug A — generated R cells had no `%%R` magic.** Models emit a bare R block (often
+    from a ` ```r ` fence); after fence-stripping it was inserted as a code cell with no
+    `%%R`, so the IPython kernel parsed R as Python and died on `$`/`<-` (`SyntaxError`),
+    and the fix loop couldn't recover (it kept emitting bare R). **Fix:** added an
+    idempotent `ensure_r_cell_magic()` that prepends `%%R` to any generated analysis cell
+    that isn't already an R magic cell or the Python rpy2 setup cell (`%load_ext`/`import
+    rpy2`). Applied at all three legacy insertion sites (initial / fix-loop retry / seeded
+    next-step) and, for parity, in `claude.NotebookSession.insert_cell` +
+    `overwrite_cell_source` — which opencode and the claude Agent-SDK MCP tools all route
+    through, so all three executors are covered.
+  - **Bug B — silent per-message timeout = false success.** `legacy.run_last_cell` polled
+    `get_iopub_msg(timeout=300)` and treated a timeout as completion, returning
+    `(True, None)` with **empty outputs** while the kernel was still busy (monocle3
+    `fit_models` fits a per-gene GLM and ran past 300s). Result: empty cells the VLM then
+    "interpreted." **Fix:** an overall wall-clock budget (`CELL_EXEC_TIMEOUT`, env
+    `CELLVOYAGER_CELL_TIMEOUT`, default 900s), idle-detection scoped to the cell's own
+    `msg_id`, and on timeout it **interrupts the kernel and returns a real failure** so the
+    fix loop can react (e.g. subset before `fit_models`) instead of recording empty success.
+  **Verified (legacy+Gemini):** kernel-level tests — a `%%R print(ggplot)` cell captures
+  `image/png` through `run_last_cell`; a slow cell times out → interrupt → truthful failure
+  → kernel recovers. End-to-end — both analysis cells run as `%%R` (setup stays Python
+  rpy2), **plots captured inline as image/png** (step-2 after_run + the fixed step-1 cell),
+  two Agent-Interpretation (VLM) cells present, **no scanpy/anndata surviving**, and the
+  **fix loop recovered on attempt 1** from a genuine R error (`library(patchwork)` missing →
+  now an `RInterpreterError`, *not* a Python `SyntaxError` — proof the cell ran as R), §6.5.
+  `py_compile` clean on all three executors; `ensure_r_cell_magic` unit-tested (idempotent;
+  legacy & claude copies agree). **Not verified:** claude (`ANTHROPIC_API_KEY` absent) and
+  opencode (no local OpenAI-compatible server) end-to-end — fixes applied but unexercised.
 
 ## 1. Summary
 
@@ -307,5 +367,5 @@ shuttle strings and images and are backend-agnostic.
 4. ✅ **DONE** — CLI/param rename `--h5ad-path`→`--rds-path`, `h5ad_path`→`rds_path` through agent + 3 executors + GUI; example-RDS defaults (§4.6).
 5. ✅ **DONE** — Docs helper R-help reimplementation (§4.5) — verified on `reduce_dimension` (§6.3).
 6. ✅ **DONE** — Prompt rewrites (§4.4): scanpy→monocle3/R content across `cellvoyager/prompts/` (+ ablations) and the executor code prompts; placeholder tokens kept (shared with legacy standalone).
-7. Example/docs updates (§4.7). **← next**
-8. End-to-end per executor + fix loop (§6.4, §6.5).
+7. ✅ **DONE** — Example/docs updates (§4.7): README/QS/AGENTS/user-guide rewritten scanpy/h5ad→monocle3/RDS; in-repo iPSC RDS as the example.
+8. ✅ **DONE (legacy)** — End-to-end + fix loop (§6.4, §6.5) verified on legacy+Gemini; found & fixed the missing-`%%R` and silent-timeout bugs. claude/opencode share the fixes but are end-to-end unverified (no creds/server here).

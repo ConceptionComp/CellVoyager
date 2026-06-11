@@ -7,7 +7,7 @@ To try out the CellVoyager UI, check out the [CellVoyager demo](https://cellvoya
 
 For a full walkthrough of CLI usage, model setup, inputs, outputs, and troubleshooting, see the [User Guide](docs/user-guide.md).
 
-*Note: because of memory constraints, this uses a pre-loaded dataset + dataset summary (the one used for the COVID-19 case study).*
+*Note: because of memory constraints, this uses a pre-loaded dataset + dataset summary (the example iPSC Monocle3 `cell_data_set`).*
 
 # Installation
 
@@ -16,9 +16,13 @@ Clone the repository and create the conda environment:
 ```bash
 git clone https://github.com/zou-group/CellVoyager.git
 cd CellVoyager
-conda env create -f environment.yml
-conda activate CellVoyager
+conda env create -f environment-monocle3.yml
+conda activate CellVoyager-r
 ```
+
+CellVoyager runs single-cell analyses with **monocle3 in R**, bridged into Python via
+`rpy2`. The `CellVoyager-r` environment bundles both the Python orchestrator and the R
+monocle3 backend in a single conda env (see `environment-monocle3.yml`).
 
 CellVoyager requires API keys depending on which models you use. Create a `.env` file in the project root:
 
@@ -55,7 +59,7 @@ It also simulatenously builds a Jupyter notebook in your `outputs/` folder.
 
 | Input | Description |
 |---|---|
-| Dataset | Drag and drop a .h5ad AnnData file from your computer |
+| Dataset | Drag and drop a `.RDS` Monocle3 `cell_data_set` (CDS) file from your computer |
 | Dataset Summary | A summary for the dataset you are inputting (e.g. which diseases, tissues, etc. are in the dataset) |
 | Past Analyses Tried | Any analyses that you've already conducted and want the agent to build on top of |
 | Directions to Focus On | Guides the agent on which general topics you want to explor (e.g. IL-17 pathway genes) |
@@ -86,14 +90,14 @@ It also simulatenously builds a Jupyter notebook in your `outputs/` folder.
 ## Terminal
 
 ```bash
-python run_cellvoyager.py --h5ad-path PATH_TO_H5AD_DATASET \
+python run_cellvoyager.py --rds-path PATH_TO_RDS_DATASET \
                           --paper-path PATH_TO_PAPER_SUMMARY \
                           --analysis-name RUN_NAME
 ```
 
 | Argument | Description |
 |---|---|
-| `--h5ad-path` | Path to the anndata `.h5ad` file |
+| `--rds-path` | Path to the Monocle3/SCE `.RDS` file (`cell_data_set`) |
 | `--paper-path` | Path to a `.txt` file containing a summary of the paper / biological context |
 | `--analysis-name` | Name for the analysis output directory |
 | `--execution-mode` | `claude` (default), `legacy`, or `opencode` |
@@ -117,7 +121,7 @@ export OPENAI_BASE_URL=http://localhost:11434/v1
 export OPENAI_API_KEY=local
 python run_cellvoyager.py --execution-mode legacy \
                           --model-name llama3.1 \
-                          --h5ad-path PATH_TO_H5AD_DATASET \
+                          --rds-path PATH_TO_RDS_DATASET \
                           --paper-path PATH_TO_PAPER_SUMMARY \
                           --analysis-name RUN_NAME
 ```
@@ -130,7 +134,7 @@ export OPENAI_API_KEY=local
 python run_cellvoyager.py --execution-mode opencode \
                           --model-name google/gemma-4-26b-a4b \
                           --execution-model google/gemma-4-26b-a4b \
-                          --h5ad-path PATH_TO_H5AD_DATASET \
+                          --rds-path PATH_TO_RDS_DATASET \
                           --paper-path PATH_TO_PAPER_SUMMARY \
                           --analysis-name RUN_NAME
 ```
@@ -141,15 +145,14 @@ The agent will work in a live Jupyter notebook and the user can interact with th
 
 # Example
 
-We use the COVID-19 case study from [Wilk et al. 2020](https://www.nature.com/articles/s41591-020-0944-y).
+A ready-to-run example iPSC dataset ships with the repo as a Monocle3 `cell_data_set`:
 
-Download the `.h5ad` object:
+- `example/iPSC_dataset/HL052vHL043_PXGL_PXGGA_updated_processed_annotated.RDS` — the CDS
+- `example/iPSC_dataset/HL052 and HL034 PXGL and PXGGA 10X comparisons.txt` — the dataset summary
 
-```bash
-curl -o example/covid19.h5ad "https://hosted-matrices-prod.s3-us-west-2.amazonaws.com/Single_cell_atlas_of_peripheral_immune_response_to_SARS_CoV_2_infection-25/Single_cell_atlas_of_peripheral_immune_response_to_SARS_CoV_2_infection.h5ad"
-```
-
-Then either run the GUI and drag the dataset into it or run it with `python run_cellvoyager.py`
+These are the CLI defaults, so running `python run_cellvoyager.py` with no `--rds-path`/
+`--paper-path` uses them directly. Otherwise either run the GUI and drag the `.RDS` into it,
+or point `--rds-path` at your own Monocle3/SCE `.RDS` file.
 
 # CellBench
 
