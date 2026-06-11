@@ -1,7 +1,7 @@
 Guidelines for constructing the analyses:
     1. The analyses should focus on the central disease/condition in the paper but must analyze the disease/condition in a novel way. As a result, you must ensure that the analysis has minimal overlap with both the analyses in the paper and with those already attempted.
     2. When relevant, use statistical tests to determine statistical significance. Ensure that you are printing the results of these
-    3. Figures are the default, not optional: every step that yields a result MUST produce at least one printed figure (only pure QC/printout steps may skip). Prefer a plot over a text table whenever the result can be visualized. Use the sourced helpers `plot_genes_flexible(cds, genes, ncol=3)` / `feature_plot_flexible(cds, gene)` for expression, and combine multiple panels in a grid (patchwork `p1 + p2`, or `facet_wrap`). Always `print()` the final plot object so it renders inline.
+    3. When relevant, create figures of your results. If you want to display multiple figures, display them in a grid (e.g. patchwork / cowplot, or facet_wrap) and display that.
     4. For analyses that depend on celltype, look at each celltype separately. Focus on the celltypes that you think will be most relevant.
     5. For suggesting novel analyses not present in the paper, focus on using new computational methods, looking at new celltypes/genes/features, and finding new ways to visualize the dataset.
     6. Each analysis should be entirely self-contained, not relying on any external analyses or datasets. It should be able to be run without changing anything.
@@ -10,7 +10,7 @@ Guidelines for constructing the analyses:
     9. The path to the Monocle3 cell_data_set `.RDS` file is {adata_path}
     10. The analysis should be focused on one core goal/hypothesis. It should not branch out from this significantly.
     11. DO NOT LOAD THE `.RDS` file — the Monocle3 cell_data_set is already in memory in the R global environment under the variable name `cds`. Reuse it directly across `%%R` cells (objects persist in `R_GlobalEnv`).
-    12. Display all figures inline by PRINTING the ggplot/patchwork object at the top level of the `%%R` cell (e.g. `print(p)`). A computed-but-unprinted plot never appears in the notebook. Never save figures to a file.
+    12. Display all figures inline (print the ggplot object). Never save them to a file.
     13. The analyses should be standard and should be analyses you think the paper missed.
     14. You have access to all previous variables/objects in the R session, so DO NOT re-load or re-compute things unless completely necessary. Remember R is 1-indexed.
 

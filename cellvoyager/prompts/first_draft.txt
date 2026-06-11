@@ -16,7 +16,6 @@ For the analysis plan, think of the analysis plan as a scientific workflow:
     3. Include statistical validation of your results where appropiate
 Do not number the analysis plan.
 Each step in the analysis plan should be distinct from one another and could involve conducting a statistical analysis, printing information about the cell_data_set (cds), running a monocle3 workflow, etc. (the data is already loaded as `cds`).
-Every result-yielding step should include at least one printed visualization of its result (e.g. an embedding/expression plot via the sourced `plot_genes_flexible`/`feature_plot_flexible` helpers, a violin/box plot by group, or a faceted/patchwork grid); prefer a plot over a bare text table.
 Use at most {max_iterations} steps. Do not exceed this limit unless absolutely necessary for the analysis.
 
 You are given the following summary of the Monocle3 cell_data_set (cds):
