@@ -11,7 +11,7 @@ Do not add any keys beyond `hypothesis`, `analysis_plan`, `first_step_code`, `co
 {CODING_GUIDELINES}
 
 For the analysis plan, think of the analysis plan as a scientific workflow:
-    1. Start with exploratory data analysis that is broad and tests many things
+    1. Start with exploratory data analysis that is broad and tests many things. Ground every subset and `group_cells_by`/`model_formula_str` in the REAL column names and category values — these are listed in the cds summary below (each colData column with example values), so use them verbatim and never invent a column or level (e.g. a cell line may be in `cellline_detail`, not `Cell.Line`; cell-type/cluster labels are in `assigned_cell_type`/`clusters(cds)`). The first step's code should print `colnames(colData(cds))` and `table(...)`/`unique(...)` for the columns your hypothesis relies on to confirm them. Inventing a column/level silently yields an empty subset and a figureless run.
     2. Then, focus on the more promising results from the exploratory phase by creating more focused analyses
     3. Include statistical validation of your results where appropiate
 Do not number the analysis plan.
