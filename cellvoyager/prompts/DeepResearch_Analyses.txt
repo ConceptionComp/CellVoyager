@@ -1,16 +1,16 @@
 All code below is R, executed through monocle3 (via rpy2 `%%R` cell magic). The data handle is the R object `cds`, a Monocle3 `cell_data_set` (an extension of `SingleCellExperiment`). It is already loaded in memory. Access its parts with R accessors: `colData(cds)` (cell metadata), `rowData(cds)`/`fData(cds)` (gene metadata), `reducedDims(cds)` (embeddings), `assay(cds, "counts")`/`exprs(cds)` (expression matrices), `dim(cds)` (returns `[genes, cells]`).
 
 ## Preprocessing
-Purpose: Normalize, log-transform, and reduce the data to a low-dimensional PCA space that downstream steps build on.
-preprocess_cds: `cds <- preprocess_cds(cds, num_dim = 50, method = "PCA")` normalizes (log + size-factor) and computes the top principal components, stored in `reducedDims(cds)[["PCA"]]`. Use `method = "PCA"` (default) or `"LSI"`. Inspect explained variance with `plot_pc_variance_explained(cds)`. Batch effects can be removed afterward with `cds <- align_cds(cds, alignment_group = "<batch_column>")`, which writes an `"Aligned"` reduced dim that later steps will pick up automatically. Note: a CDS read from an existing `.RDS` may already be preprocessed/aligned — check `reducedDimNames(cds)` before recomputing.
+Purpose: Normalize, log-transform, and reduce the data to a low-dimensional space that downstream steps build on.
+preprocess_cds: `ccds <- preprocess_cds(cds, num_dim = 30)` normalizes and computes the top principal components, stored in `reducedDims(cds)[["PCA"]]`. Use `method = "PCA"` (default) or `"LSI"`. Inspect explained variance with `plot_pc_variance_explained(cds)`. Batch effects can be removed afterward with `cds <- align_cds(cds, alignment_group = "<batch_column>")`, which writes an `"Aligned"` reduced dim that later steps will pick up automatically. Note: a CDS read from an existing `.RDS` may already be preprocessed/aligned — check `reducedDimNames(cds)` before recomputing.
 
 ## Dimensionality Reduction
 Purpose: Embed cells into 2D/3D for visualization and as the basis for clustering.
-reduce_dimension: `cds <- reduce_dimension(cds, reduction_method = "UMAP")` builds a UMAP embedding (default) from the PCA/Aligned space, stored in `reducedDims(cds)[["UMAP"]]`. `reduction_method = "tSNE"` is also available. Control it with `umap.n_neighbors`, `umap.min_dist`, `preprocess_method = "PCA"` or `"Aligned"`. Visualize with `plot_cells(cds)`. Reduction requires `preprocess_cds` to have run first.
+reduce_dimension: `cds <- reduce_dimension(cds, reduction_method = "UMAP")` builds a UMAP embedding (default) from the PCA/Aligned space, stored in `reducedDims(cds)[["UMAP"]]`. Control it with `umap.n_neighbors`, `umap.min_dist`, `preprocess_method = "PCA"` or `"Aligned"`. Visualize with `plot_cells(cds)`. Reduction requires `preprocess_cds` to have run first.
 
 ## Clustering
 Purpose: Identify groups of similar cells (cell types or states) in an unsupervised way.
-cluster_cells: `cds <- cluster_cells(cds, resolution = 1e-3)` runs Leiden/Louvain community detection on the UMAP space and assigns each cell a cluster (`clusters(cds)`) and a partition (`partitions(cds)`). Higher `resolution` → more clusters. It depends on `reduce_dimension`. Retrieve labels with `clusters(cds)` or color them via `plot_cells(cds, color_cells_by = "cluster")`. Partitions are coarse groupings used by trajectory learning.
+cluster_cells: `cds <- cluster_cells(cds, resolution = 20)` runs Leiden/Louvain community detection on the UMAP space and assigns each cell a cluster (`clusters(cds)`) and a partition (`partitions(cds)`). Higher `resolution` → more clusters. It depends on `reduce_dimension`. Retrieve labels with `clusters(cds)` or color them via `plot_cells(cds, color_cells_by = "cluster")`. Partitions are coarse groupings used by trajectory learning.
 
 ## Marker Gene Detection
 Purpose: Identify genes that distinguish clusters or annotated groups.
@@ -19,7 +19,7 @@ top_markers: `marker_test <- top_markers(cds, group_cells_by = "cluster", refere
 ## Differential Expression
 Purpose: Find genes that distinguish groups of cells (clusters, cell types, conditions).
 
-**Primary path — `top_markers()` (use this for almost all marker/DE work):**
+**Primary path — `top_markers()` (use this for almost all marker, but this is not a differential expression workflow):**
 `top_markers(cds, group_cells_by = "<colData column>", cores = 1)` returns a data.frame of the most specific genes per group, ranked by `marker_score`/`specificity` with `pseudo_R2` and `marker_test_p_value`. `group_cells_by` must be a column in `colData(cds)` (e.g. `"cluster"` or a cell-type annotation). It is robust, fast, and needs no model specification — prefer it whenever the question is "which genes mark this group?". Keep `cores = 1` for stability under rpy2.
 
 **Reserved path — `fit_models()` (ONLY for an explicit condition contrast):**
@@ -29,8 +29,7 @@ Purpose: Find genes that distinguish groups of cells (clusters, cell types, cond
 cds_sub <- filter_cds_genes(cds[, cells_of_interest], num_cells_expressed_cutoff = 10)
 colData(cds_sub)$grp <- droplevels(factor(colData(cds_sub)$grp))
 stopifnot(nlevels(colData(cds_sub)$grp) >= 2)            # else no contrast term exists
-fits <- fit_models(cds_sub, model_formula_str = "~grp",
-                   expression_family = "quasipoisson", cores = 1)
+fits <- fit_models(cds_sub, model_formula_str = "~grp~num_genes_expressed")
 ct <- coefficient_table(fits)
 print(unique(ct$term)); print(colnames(ct))             # discover real term/column names — never guess
 res <- ct[ct$status == "OK" & ct$term != "(Intercept)", ]
@@ -50,8 +49,28 @@ There is no single monocle3 scoring call; compute it from the expression matrix.
 
 ## Visualization
 Purpose: Plot results (embeddings, marker expression, QC) to interpret data. All plots are ggplot2 objects — print them to render inline.
-plot_cells: the workhorse — `plot_cells(cds, color_cells_by = "cluster")`, `plot_cells(cds, color_cells_by = "pseudotime")`, `plot_cells(cds, genes = c("GENE1", "GENE2"))` (colors by expression, faceted per gene), with `label_groups_by_cluster`, `show_trajectory_graph`, `group_label_size`.
+plot_cells: the workhorse — `plot_cells(cds, color_cells_by = "cluster")`, `plot_cells(cds, color_cells_by = "pseudotime")`, `plot_cells(cds, genes = c("GENE1", "GENE2"),scale_by_range=FALSE)` (colors by expression, faceted per gene), with `label_groups_by_cluster`, `show_trajectory_graph`, `group_label_size`.
 plot_genes_by_group: dotplot of mean expression × fraction expressing for selected genes across a grouping (cluster/celltype).
 plot_genes_in_pseudotime: expression of selected genes as a function of pseudotime.
 plot_pc_variance_explained / plot_percent_cells_positive: QC and composition.
 For anything custom, extract data from `colData(cds)`, `rowData(cds)`, `reducedDims(cds)`, or `exprs(cds)` into a data.frame and build the figure directly with ggplot2 (`ggplot(...) + geom_*`). Combine multiple panels with patchwork (`p1 + p2`) or `cowplot::plot_grid`. Always print the final plot object so it renders inline.
+
+## Plotting cookbook (default to a printed figure in every result step)
+These helpers are already sourced into the session — call them directly. Every result-yielding step should print at least one figure; prefer a plot over a bare text table.
+
+- **Genes on the embedding (multi-panel grid):** `print(plot_genes_flexible(cds, c("GENE1","GENE2","GENE3"), ncol = 3))`. Uses `scale_to_range = FALSE` and `norm_method = "log"` for an absolute, comparable color scale, and silently drops genes not in the CDS. For a single gene: `print(feature_plot_flexible(cds, "GENE1"))`. (If you call `plot_cells(cds, genes = ...)` directly, always pass `scale_to_range = FALSE`.)
+- **Expression by group (violin/box):** pull one gene's normalized expression into a data.frame and compare across a `colData` group:
+  ```r
+  df <- data.frame(expr = as.numeric(normalized_counts(cds)[gene_row, ]),
+                   grp  = colData(cds)$assigned_cell_type)
+  print(ggplot(df, aes(grp, expr)) + geom_violin() + geom_boxplot(width = 0.1) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)))
+  ```
+- **Scatter with correlation:** plot two per-cell quantities and annotate Pearson r:
+  ```r
+  r <- cor(df$x, df$y)
+  print(ggplot(df, aes(x, y)) + geom_point(alpha = 0.3) + geom_smooth(method = "lm") +
+        ggtitle(sprintf("r = %.2f", r)))
+  ```
+- **Faceted / multi-panel:** use `+ facet_wrap(~ group)` for one ggplot split by a category, or combine separate plots with patchwork (`print(p1 + p2 + plot_layout(ncol = 2))`).
+- **Markers across groups:** `print(plot_genes_by_group(cds, marker_genes, group_cells_by = "cluster"))` (dotplot), or `print(plot_cells(cds, color_cells_by = "cluster"))` for the labeled embedding.
