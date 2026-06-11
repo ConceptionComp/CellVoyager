@@ -58,7 +58,7 @@ For anything custom, extract data from `colData(cds)`, `rowData(cds)`, `reducedD
 ## Plotting cookbook (default to a printed figure in every result step)
 These helpers are already sourced into the session — call them directly. Every result-yielding step should print at least one figure; prefer a plot over a bare text table.
 
-- **Genes on the embedding (multi-panel grid):** `print(plot_genes_flexible(cds, c("GENE1","GENE2","GENE3"), ncol = 3))`. Uses `scale_to_range = FALSE` and `norm_method = "log"` for an absolute, comparable color scale, and silently drops genes not in the CDS. For a single gene: `print(feature_plot_flexible(cds, "GENE1"))`. (If you call `plot_cells(cds, genes = ...)` directly, always pass `scale_to_range = FALSE`.)
+- **Genes on the embedding (multi-panel grid):** `plot_genes_flexible(cds, c("GENE1","GENE2","GENE3"))` prints a 3-per-row grid (uses `scale_to_range = FALSE` + `norm_method = "log"` for an absolute, comparable scale, and silently drops genes not in the CDS); it prints internally, so do not wrap it in `print()`. Pass `facetby = "<colData column>"` to instead get one plot per gene faceted by that variable. For a single gene that returns a ggplot you print yourself: `print(feature_plot_flexible(cds, "GENE1"))`. (If you call `plot_cells(cds, genes = ...)` directly, always pass `scale_to_range = FALSE`.)
 - **Expression by group (violin/box):** pull one gene's normalized expression into a data.frame and compare across a `colData` group:
   ```r
   df <- data.frame(expr = as.numeric(normalized_counts(cds)[gene_row, ]),
