@@ -475,6 +475,102 @@ class IdeaExecutor:
 
         return feedback
 
+    def _collect_displayed_images(self, notebook, max_images=12):
+        """Collect base64 PNGs that were actually displayed in the notebook.
+
+        Used by generate_conclusion so the VLM only ever sees figures the run
+        truly produced (never a computed-but-unprinted plot). Returns the most
+        recent `max_images` so the payload stays bounded on long notebooks.
+        """
+        images = []
+        for cell in notebook.cells:
+            if getattr(cell, "cell_type", None) != "code":
+                continue
+            for output in getattr(cell, "outputs", []) or []:
+                if output.get("output_type") == "display_data":
+                    image_data = output.get("data", {}).get("image/png")
+                    if image_data:
+                        images.append({"data": image_data, "format": "image/png"})
+        return images[-max_images:]
+
+    def generate_conclusion(self, notebook, hypothesis, analysis_plan, analysis_idx=0):
+        """Backward-looking synthesis of the whole analysis (the run's conclusion).
+
+        Distinct from interpret_results (which is forward-looking per-step
+        feedback): this restates the hypothesis, gives an explicit verdict, cites
+        results actually present, and lists limitations/failed steps. Modeled on
+        interpret_results for client/logging/save plumbing; passes displayed
+        figures when use_VLM so it references only figures that truly rendered.
+        Called once after the iteration loop, so it is guaranteed to run.
+        """
+        jupyter_summary = self.generate_jupyter_summary(notebook.cells)
+
+        prompt = open(os.path.join(self.prompt_dir, "conclusion.txt")).read()
+        prompt = prompt.format(
+            hypothesis=hypothesis,
+            analysis_plan=analysis_plan,
+            jupyter_notebook=jupyter_summary,
+        )
+
+        if self.log_prompts:
+            path = self._save_prompt(prompt, analysis_idx, 0, "conclusion")
+            if self.interactive:
+                prompt = self._interactive_pause(path)
+
+        system_content = (
+            "You are a single-cell transcriptomics expert writing the final, "
+            "backward-looking conclusion of a completed R (monocle3) analysis."
+        )
+
+        if self.use_VLM:
+            image_outputs = self._collect_displayed_images(notebook)
+            user_content = [{"type": "text", "text": prompt}]
+            try:
+                for img in image_outputs:
+                    try:
+                        image_data = img["data"]
+                        if isinstance(image_data, str) and "," in image_data:
+                            image_data = image_data.split(",")[1]
+                        user_content.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{image_data}"},
+                            }
+                        )
+                    except Exception as e:
+                        print(f"Warning: Error processing image: {str(e)}")
+                        continue
+
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": system_content},
+                        {"role": "user", "content": user_content},
+                    ],
+                )
+                conclusion = response.choices[0].message.content
+            finally:
+                image_outputs.clear()
+                user_content.clear()
+                import gc
+                gc.collect()
+        else:
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            conclusion = response.choices[0].message.content
+
+        if self.log_responses:
+            resp_path = self._save_response(conclusion, analysis_idx, 0, "conclusion")
+            if self.interactive:
+                print(f"[interactive] Response saved: {resp_path}")
+
+        return conclusion
+
     def start_persistent_kernel(self):
         """Start a persistent kernel for efficient cell execution"""
         try:
@@ -1004,6 +1100,26 @@ print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
                 self.save_notebook_snapshot(notebook, analysis_idx, step_idx, "after_planning")
 
             self.update_code_memory(notebook.cells)
+
+        # Reserved synthesis step — runs outside the iteration loop so it is
+        # guaranteed to execute and the notebook ends on a holistic wrap-up
+        # rather than the last step's forward-looking interpretation.
+        print("📝 Generating conclusion...")
+        try:
+            conclusion = self.generate_conclusion(
+                notebook, hypothesis, analysis_plan, analysis_idx=analysis_idx + 1,
+            )
+            self.logger.log_response(conclusion, f"conclusion_{analysis_idx+1}")
+            notebook.cells.append(
+                nbf.v4.new_markdown_cell(f"## Conclusion\n\n{conclusion}")
+            )
+            self.save_notebook_snapshot(notebook, analysis_idx, self.max_iterations + 1, "conclusion")
+        except Exception as e:
+            print(f"⚠️ Failed to generate conclusion: {e}")
+            self.logger.log_response(
+                f"CONCLUSION GENERATION FAILED - Analysis {analysis_idx+1}: {e}",
+                f"conclusion_failed_{analysis_idx+1}",
+            )
 
         notebook_path = os.path.join(
             self.output_dir, f"{self.analysis_name}_analysis_{analysis_idx+1}.ipynb"
