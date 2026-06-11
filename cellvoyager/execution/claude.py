@@ -52,29 +52,6 @@ def strip_code_fences(text: str) -> str:
     return text.strip()
 
 
-def ensure_r_cell_magic(code: str) -> str:
-    """Guarantee a generated analysis code cell runs as R via the rpy2 `%%R` magic.
-
-    The backend is monocle3 (R), so analysis cells are R that must run through the
-    `%%R` cell magic. Models sometimes emit a bare R block with no `%%R` line — the
-    IPython kernel would then parse R as Python and fail on `$`, `<-`, etc. Prepend
-    `%%R` unless the cell is already an R magic cell or the Python rpy2 setup cell
-    (`%load_ext` / `import rpy2`). Idempotent, so it is safe to apply on every
-    code-cell insert/overwrite.
-    """
-    if not code:
-        return code
-    stripped = code.lstrip()
-    if not stripped:
-        return code
-    first_line = stripped.splitlines()[0]
-    if first_line.startswith("%%R"):
-        return code
-    if first_line.startswith("%load_ext") or "rpy2" in first_line:
-        return code
-    return "%%R\n" + code
-
-
 def now_str() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -158,7 +135,7 @@ class NotebookSession:
         if cell_type == "markdown":
             cell = new_markdown_cell(source)
         elif cell_type == "code":
-            cell = new_code_cell(ensure_r_cell_magic(source))
+            cell = new_code_cell(source)
         else:
             raise ValueError("cell_type must be 'markdown' or 'code'")
 
@@ -173,8 +150,6 @@ class NotebookSession:
 
     def overwrite_cell_source(self, index: int, source: str) -> dict[str, Any]:
         self._require_index(index)
-        if self.nb.cells[index].cell_type == "code":
-            source = ensure_r_cell_magic(source)
         self.nb.cells[index].source = source
         if self.nb.cells[index].cell_type == "code":
             self.nb.cells[index]["outputs"] = []

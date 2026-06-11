@@ -5,7 +5,6 @@ Extracted from agent.py - Phase 2: Idea Execution.
 import os
 import re
 import json
-import time
 import base64
 import copy
 import datetime
@@ -22,39 +21,10 @@ AVAILABLE_PACKAGES = "monocle3, SingleCellExperiment, Matrix, ggplot2"
 # (system arm64 R crashes on an arch mismatch). Override via env if registered elsewhere.
 CELLVOYAGER_KERNEL_NAME = os.environ.get("CELLVOYAGER_KERNEL_NAME", "cellvoyager-r")
 
-# Overall wall-clock budget (seconds) for a single generated cell to run to completion.
-# monocle3 routines like fit_models fit a per-gene GLM and can run for minutes; the cap
-# is generous but finite so a runaway/silent cell is interrupted and reported as a failure
-# (the fix loop can then react) rather than silently treated as an empty success.
-CELL_EXEC_TIMEOUT = int(os.environ.get("CELLVOYAGER_CELL_TIMEOUT", "900"))
-
 
 def strip_code_markers(text):
     """Remove ```r, ```python and ``` fences from code blocks."""
     return re.sub(r"```r|```R|```python|```", "", text)
-
-
-def ensure_r_cell_magic(code):
-    """Guarantee a generated analysis cell runs as R via the rpy2 `%%R` magic.
-
-    The backend is monocle3 (R), so every generated analysis cell is R that must
-    run through the `%%R` cell magic. Models frequently emit a bare R block with
-    no `%%R` line — the IPython kernel would then parse R as Python and fail on
-    `$`, `<-`, etc. Prepend `%%R` unless the cell is already an R magic cell or
-    the Python rpy2 setup cell (`%load_ext` / `import rpy2`). Idempotent, so it is
-    safe to apply on every insertion and on each fix-loop retry.
-    """
-    stripped = code.lstrip()
-    if not stripped:
-        return code
-    first_line = stripped.splitlines()[0]
-    # Already an R magic cell (e.g. "%%R" or "%%R -w 800 -h 600").
-    if first_line.startswith("%%R"):
-        return code
-    # The rpy2 setup cell is intentionally Python (loads the magic / uses ro.r()).
-    if first_line.startswith("%load_ext") or "rpy2" in first_line:
-        return code
-    return "%%R\n" + code
 
 
 class IdeaExecutor:
@@ -523,32 +493,20 @@ class IdeaExecutor:
         msg_id = self.kernel_client.execute(code)
         outputs = []
 
-        # Track real completion (our cell's "idle" status) vs. an overall-timeout break.
-        # A per-message timeout must NOT be treated as completion: a slow cell (e.g. a long
-        # fit_models) can run silently for a while, and breaking early would record a false
-        # success with empty outputs while the kernel is still busy.
-        deadline = time.monotonic() + CELL_EXEC_TIMEOUT
-        completed = False
-
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
             try:
-                msg = self.kernel_client.get_iopub_msg(timeout=min(remaining, 10))
+                msg = self.kernel_client.get_iopub_msg(timeout=300)
             except Exception:
-                # No message yet; keep waiting until the overall deadline.
-                continue
+                break
 
             msg_type = msg["msg_type"]
             content = msg["content"]
 
+            if msg_type == "status" and content.get("execution_state") == "idle":
+                break
+
             if msg["parent_header"].get("msg_id") != msg_id:
                 continue
-
-            if msg_type == "status" and content.get("execution_state") == "idle":
-                completed = True
-                break
 
             if msg_type == "stream":
                 outputs.append(
@@ -579,29 +537,6 @@ class IdeaExecutor:
                         traceback=content["traceback"],
                     )
                 )
-
-        # Overall timeout: the cell never reached idle. Interrupt the still-running kernel
-        # so the next cell starts clean, and surface it as a real failure (not empty success).
-        if not completed:
-            try:
-                self.kernel_manager.interrupt_kernel()
-            except Exception:
-                pass
-            timeout_msg = (
-                f"TimeoutError: cell exceeded {CELL_EXEC_TIMEOUT}s and was interrupted "
-                f"(consider a faster approach, e.g. subsetting genes/cells before fit_models)"
-            )
-            outputs.append(
-                new_output(
-                    output_type="error",
-                    ename="TimeoutError",
-                    evalue=timeout_msg,
-                    traceback=[timeout_msg],
-                )
-            )
-            code_cell_index = nb.cells.index(last_code_cell)
-            nb.cells[code_cell_index].outputs = outputs
-            return False, timeout_msg, nb
 
         code_cell_index = nb.cells.index(last_code_cell)
         nb.cells[code_cell_index].outputs = outputs
@@ -777,7 +712,7 @@ print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
         if analysis_plan:
             notebook.cells.append(nbf.v4.new_markdown_cell(f"## {analysis['code_description']}"))
 
-        current_code = ensure_r_cell_magic(strip_code_markers(current_code))
+        current_code = strip_code_markers(current_code)
         notebook.cells.append(new_code_cell(current_code))
         self.save_notebook_snapshot(notebook, analysis_idx, 0, "setup")
 
@@ -834,7 +769,7 @@ print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
                         current_code, error_msg, documentation=documentation,
                         analysis_idx=analysis_idx + 1, step=step_idx, attempt=fix_attempt,
                     )
-                    current_code = ensure_r_cell_magic(strip_code_markers(current_code))
+                    current_code = strip_code_markers(current_code)
                     notebook.cells[-1] = nbf.v4.new_code_cell(current_code)
 
                     success, error_msg, notebook = self.run_last_cell(notebook)
@@ -980,7 +915,7 @@ print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
                 notebook.cells.append(next_step_cell)
                 code_description = modified_analysis["code_description"]
                 notebook.cells.append(nbf.v4.new_markdown_cell(f"## {code_description}"))
-                modified_code = ensure_r_cell_magic(strip_code_markers(modified_analysis["first_step_code"]))
+                modified_code = strip_code_markers(modified_analysis["first_step_code"])
                 notebook.cells.append(new_code_cell(modified_code))
                 current_code = modified_code
                 self.save_notebook_snapshot(notebook, analysis_idx, step_idx, "after_planning")

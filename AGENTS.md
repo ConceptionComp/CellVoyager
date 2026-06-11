@@ -4,13 +4,6 @@
 - This file applies to the entire repository.
 
 ## Project State
-- CellVoyager's analysis backend is **monocle3 in R**, bridged into the Python Jupyter
-  kernel via `rpy2` (the LLM writes R through `%%R` / `rpy2.robjects`); there is no Python
-  monocle3. Input data is a native Monocle3/SCE `.RDS` (`cell_data_set`, canonical handle
-  `cds`), passed via `--rds-path`. The conda env is `CellVoyager-r`, created from
-  `environment-monocle3.yml` (a single env bundling the Python orchestrator and the R
-  monocle3 backend — do **not** use system R, it segfaults loading monocle3 native
-  modules). Migration details: `docs/specs/monocle3-migration.md`.
 - CellVoyager now supports two model families only:
   - `Anthropic` for Claude-specific execution paths.
   - `OpenAI-compatible` models for planning and legacy execution, including local servers via `OPENAI_BASE_URL` or `OPENAI_API_BASE`.
@@ -21,8 +14,7 @@
 - The GUI execution path still launches `run_cellvoyager.py --execution-mode claude`.
 - GUI model dropdowns now include `google/gemma-4-26b-a4b` and `qwen/qwen3.5-35b-a3b`.
 - `cellvoyager/llm_utils.py` treats `google/`, `qwen/`, `meta-llama/`, `deepseek/`, and `mistralai/` model IDs as `OpenAI-compatible`.
-- `environment-monocle3.yml` (env `CellVoyager-r`) is the canonical environment for the
-  monocle3 backend; it includes the `markdown` package required by `gui/common.py`.
+- `environment.yml` now includes the `markdown` package required by `gui/common.py`.
 
 ## Important Constraints
 - `--execution-mode claude` still requires `ANTHROPIC_API_KEY`.
@@ -31,7 +23,7 @@
   - `OPENAI_BASE_URL` / `OPENAI_API_BASE` pointing at a compatible local server.
 - `DeepResearch` is OpenAI-specific and still requires a real `OPENAI_API_KEY`.
 - The GUI still requires `ANTHROPIC_API_KEY` because execution uses Claude even when hypothesis generation uses an OpenAI-compatible model.
-- The raw `.RDS` file stays local in GUI runs, but dataset summaries, context text, notebook content, and output previews can still be sent to the configured model backend.
+- The raw `.h5ad` file stays local in GUI runs, but dataset summaries, context text, notebook content, and output previews can still be sent to the configured model backend.
 - GUI helper features in `gui/common.py` and `cellvoyager/execution/claude.py` still prefer Anthropic first for pause summaries and chat if `ANTHROPIC_API_KEY` is set, even when the main run is otherwise local.
 
 ## Key Files
