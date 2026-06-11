@@ -1,18 +1,20 @@
 All code below is R, executed through monocle3 (via rpy2 `%%R` cell magic). The data handle is the R object `cds`, a Monocle3 `cell_data_set` (an extension of `SingleCellExperiment`). It is already loaded in memory. Access its parts with R accessors: `colData(cds)` (cell metadata), `rowData(cds)`/`fData(cds)` (gene metadata), `reducedDims(cds)` (embeddings), `assay(cds, "counts")`/`exprs(cds)` (expression matrices), `dim(cds)` (returns `[genes, cells]`).
 
-INSPECT BEFORE YOU SUBSET OR GROUP. Never guess a colData column name or a category value. Before any `cds[, colData(cds)$X == "Y"]`, `group_cells_by = "X"`, or `model_formula_str = "~X"`, first print `colnames(colData(cds))` and `table(colData(cds)$X)` (or `unique(...)`) and use the exact name/level you see — e.g. a cell line may live in a column like `cellline_detail`, not `Cell.Line`, and cluster/cell-type labels come from `colData(cds)$assigned_cell_type` or `clusters(cds)`, not invented names. A filter on a non-existent column or absent level silently returns an empty `cds`, after which every marker/plot step is skipped (producing a notebook with no figures). Prefer analyzing the full `cds` with grouping over carving out subsets; if a subset really is needed, assert it is non-empty (`stopifnot(ncol(cds_sub) > 0)`) and, if it is empty, re-inspect the metadata rather than guessing another column.
+INSPECT BEFORE YOU SUBSET OR GROUP. Never guess a colData column name or a category value. Before any `cds[, colData(cds)$X == "Y"]`, `group_cells_by = "X"`, or `model_formula_str = "~X"`, first print `colnames(colData(cds))` and `table(colData(cds)$X)` (or `unique(...)`) and use the exact name/level you see — e.g. a cell line may live in a column like `cellline_detail`, not `Cell.Line`; cluster labels come from `clusters(cds)` (always available), and a cell-type annotation column may or may not exist (check `colnames(colData(cds))` — do not assume `assigned_cell_type`). Never invent a column or level. A filter on a non-existent column or absent level silently returns an empty `cds`, after which every marker/plot step is skipped (producing a notebook with no figures). Prefer analyzing the full `cds` with grouping over carving out subsets; if a subset really is needed, assert it is non-empty (`stopifnot(ncol(cds_sub) > 0)`) and, if it is empty, re-inspect the metadata rather than guessing another column.
+
+NEVER REPROCESS THE PROVIDED DATA. The `cds` is already normalized, dimension-reduced (`reducedDims(cds)` has PCA/Aligned/UMAP), and clustered (`clusters(cds)`/`partitions(cds)`); it may also carry cell-type annotation columns in `colData(cds)` (check `colnames(colData(cds))` — do not assume a name like `assigned_cell_type` exists). Do NOT call `preprocess_cds`, `align_cds`, `reduce_dimension`, or `cluster_cells` — neither on `cds` nor on any subset. Re-running them overwrites the curated embedding, renumbers clusters, invalidates any existing cell-type annotations, and is slow (a leading cause of cell timeouts). The "Preprocessing / Dimensionality Reduction / Clustering" sections below explain what these steps produce so you can USE the existing results (via `reducedDims`, `clusters`, `partitions`, annotation columns) — not so you can recompute them. Subsetting (`cds[, cells]`) preserves the existing embedding and cluster labels for those cells; reuse them. (Only `learn_graph`/`order_cells` may be (re)run, and only for an explicit trajectory/pseudotime analysis.)
 
 ## Preprocessing
-Purpose: Normalize, log-transform, and reduce the data to a low-dimensional space that downstream steps build on.
-preprocess_cds: `ccds <- preprocess_cds(cds, num_dim = 30)` normalizes and computes the top principal components, stored in `reducedDims(cds)[["PCA"]]`. Use `method = "PCA"` (default) or `"LSI"`. Inspect explained variance with `plot_pc_variance_explained(cds)`. Batch effects can be removed afterward with `cds <- align_cds(cds, alignment_group = "<batch_column>")`, which writes an `"Aligned"` reduced dim that later steps will pick up automatically. Note: a CDS read from an existing `.RDS` may already be preprocessed/aligned — check `reducedDimNames(cds)` before recomputing.
+Purpose: Understand what was already computed (normalization + PCA) so you can build on it. Do NOT re-run this on the provided cds.
+preprocess_cds: `preprocess_cds(cds, num_dim = 30)` normalizes and computes the top principal components, stored in `reducedDims(cds)[["PCA"]]` — this has ALREADY been done for the provided data, so read `reducedDims(cds)[["PCA"]]`/`reducedDims(cds)[["Aligned"]]` rather than recomputing. Inspect explained variance with `plot_pc_variance_explained(cds)`. (`align_cds(cds, alignment_group = "<batch_column>")` is the batch-correction step that writes the `"Aligned"` reduced dim; it too is already done — check `reducedDimNames(cds)`, do not redo it.)
 
 ## Dimensionality Reduction
-Purpose: Embed cells into 2D/3D for visualization and as the basis for clustering.
-reduce_dimension: `cds <- reduce_dimension(cds, reduction_method = "UMAP")` builds a UMAP embedding (default) from the PCA/Aligned space, stored in `reducedDims(cds)[["UMAP"]]`. Control it with `umap.n_neighbors`, `umap.min_dist`, `preprocess_method = "PCA"` or `"Aligned"`. Visualize with `plot_cells(cds)`. Reduction requires `preprocess_cds` to have run first.
+Purpose: Understand the existing embedding. Do NOT re-run this on the provided cds.
+reduce_dimension: `reduce_dimension(cds, reduction_method = "UMAP")` builds a UMAP embedding from the PCA/Aligned space, stored in `reducedDims(cds)[["UMAP"]]` — ALREADY computed for the provided data. Use the existing `reducedDims(cds)[["UMAP"]]` (visualize with `plot_cells(cds)`); do not recompute it (recomputing yields a different layout and breaks comparability with the annotations).
 
 ## Clustering
-Purpose: Identify groups of similar cells (cell types or states) in an unsupervised way.
-cluster_cells: `cds <- cluster_cells(cds, resolution = 20)` runs Leiden/Louvain community detection on the UMAP space and assigns each cell a cluster (`clusters(cds)`) and a partition (`partitions(cds)`). Higher `resolution` → more clusters. It depends on `reduce_dimension`. Retrieve labels with `clusters(cds)` or color them via `plot_cells(cds, color_cells_by = "cluster")`. Partitions are coarse groupings used by trajectory learning.
+Purpose: Understand the existing clusters. Do NOT re-run this on the provided cds.
+cluster_cells: `cluster_cells(cds, resolution = ...)` runs Leiden/Louvain community detection and assigns each cell a cluster (`clusters(cds)`) and a partition (`partitions(cds)`) — ALREADY done for the provided data. Read labels with `clusters(cds)`/`partitions(cds)` or color them via `plot_cells(cds, color_cells_by = "cluster")`; do not re-cluster (it renumbers clusters and desyncs them from any existing cell-type annotation columns). Partitions are coarse groupings used by trajectory learning.
 
 ## Marker Gene Detection
 Purpose: Identify genes that distinguish clusters or annotated groups.
@@ -28,7 +30,8 @@ Purpose: Find genes that distinguish groups of cells (clusters, cell types, cond
 **Reserved path — `fit_models()` (ONLY for an explicit condition contrast):**
 `fit_models()` fits a per-gene GLM and is the model-based DE analog of scanpy's `rank_genes_groups`. It is fragile: it fails when the grouping variable has fewer than two levels present in the subset, when genes are near-all-zero, or when code guesses the coefficient term/column names. Use it only for a deliberate contrast (e.g. disease vs. control within one cell type), and always follow this defensive recipe — never guess term or column names:
 ```r
-# cells_of_interest: e.g. colData(cds)$assigned_cell_type == "<type>"
+# cells_of_interest: a logical over a colData column you CONFIRMED exists (print colnames(colData(cds)) first),
+#   e.g. colData(cds)$<celltype_col> == "<type>"
 cds_sub <- filter_cds_genes(cds[, cells_of_interest], num_cells_expressed_cutoff = 10)
 colData(cds_sub)$grp <- droplevels(factor(colData(cds_sub)$grp))
 stopifnot(nlevels(colData(cds_sub)$grp) >= 2)            # else no contrast term exists
@@ -65,7 +68,7 @@ These helpers are already sourced into the session — call them directly. Every
 - **Expression by group (violin/box):** pull one gene's normalized expression into a data.frame and compare across a `colData` group:
   ```r
   df <- data.frame(expr = as.numeric(normalized_counts(cds)[gene_row, ]),
-                   grp  = colData(cds)$assigned_cell_type)
+                   grp  = clusters(cds))   # or a confirmed colData column, e.g. colData(cds)$<group_col>
   print(ggplot(df, aes(grp, expr)) + geom_violin() + geom_boxplot(width = 0.1) +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
   ```
