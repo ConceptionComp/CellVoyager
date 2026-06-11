@@ -15,7 +15,12 @@ from jupyter_client import KernelManager
 from cellvoyager.llm_utils import create_json_chat_completion, parse_json_response_text
 from cellvoyager.utils import get_documentation
 
-AVAILABLE_PACKAGES = "monocle3, SingleCellExperiment, Matrix, ggplot2"
+AVAILABLE_PACKAGES = "monocle3, SingleCellExperiment, Matrix, ggplot2, patchwork"
+
+# Curated house helpers (gene filtering + flexible plot_cells wrappers) sourced
+# into the live R session so generated cells can call them directly. See
+# cellvoyager/r_helpers/cv_helpers.R.
+CV_HELPERS_PATH = os.path.join(os.path.dirname(__file__), "..", "r_helpers", "cv_helpers.R")
 
 # Jupyter kernel that bridges to R via rpy2. The `cellvoyager-r` kernelspec is a Python
 # ipykernel living in the CellVoyager-r conda env with R_HOME set so rpy2 finds the conda R
@@ -617,6 +622,8 @@ class IdeaExecutor:
         notebook = nbf.v4.new_notebook()
         notebook.cells.append(nbf.v4.new_markdown_cell(f"# Analysis\n\n**Hypothesis**: {hypothesis}"))
 
+        cv_helpers_path = os.path.abspath(CV_HELPERS_PATH)
+
         setup_code = f"""# Bridge to R via rpy2; the `%%R` cell magic shares one embedded R process,
 # so `cds` defined here is visible to every later %%R cell.
 %load_ext rpy2.ipython
@@ -628,6 +635,16 @@ warnings.filterwarnings('ignore')
 # Load data (Monocle3 cell_data_set). dim(cds) is [genes, cells].
 print("Loading data...")
 ro.r('library(monocle3)')
+
+# Source curated house helpers (filter_cds_genes, feature_plot_flexible,
+# plot_genes_flexible, detectQC). A load failure must not abort the run.
+try:
+    ro.r('''tryCatch(source("{cv_helpers_path}"),
+                     error = function(e) message("cv_helpers.R failed to load: ", conditionMessage(e)))''')
+    print("Loaded cv_helpers.R")
+except Exception as _e:
+    print(f"⚠️ Could not source cv_helpers.R: {{_e}}")
+
 ro.r('cds <- readRDS("{self.rds_path}")')
 _dims = ro.r('dim(cds)')
 print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
