@@ -28,10 +28,13 @@ CV_HELPERS_PATH = os.path.join(os.path.dirname(__file__), "..", "r_helpers", "cv
 CELLVOYAGER_KERNEL_NAME = os.environ.get("CELLVOYAGER_KERNEL_NAME", "cellvoyager-r")
 
 # Overall wall-clock budget (seconds) for a single generated cell to run to completion.
-# monocle3 routines like fit_models fit a per-gene GLM and can run for minutes; the cap
-# is generous but finite so a runaway/silent cell is interrupted and reported as a failure
-# (the fix loop can then react) rather than silently treated as an empty success.
-CELL_EXEC_TIMEOUT = int(os.environ.get("CELLVOYAGER_CELL_TIMEOUT", "900"))
+# monocle3 routines like fit_models and graph_test fit/test per gene and can run for many
+# minutes on the full gene set (single-core under rpy2); the cap is generous but finite so a
+# runaway/silent cell is interrupted and reported as a failure (the fix loop can then react)
+# rather than silently treated as an empty success. Default 1800s (30 min); override via env.
+# Note: a timeout interrupts the kernel mid-cell, so any figures the cell printed before the
+# slow call are also lost — heavy compute is best kept in its own cell, apart from plotting.
+CELL_EXEC_TIMEOUT = int(os.environ.get("CELLVOYAGER_CELL_TIMEOUT", "1800"))
 
 
 def strip_code_markers(text):
