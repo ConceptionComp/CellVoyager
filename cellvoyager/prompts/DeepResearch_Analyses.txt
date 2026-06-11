@@ -15,13 +15,12 @@ cluster_cells: `cds <- cluster_cells(cds, resolution = 20)` runs Leiden/Louvain 
 ## Marker Gene Detection
 Purpose: Identify genes that distinguish clusters or annotated groups.
 top_markers: `marker_test <- top_markers(cds, group_cells_by = "cluster", reference_cells = 1000)` returns a data.frame of the most specific marker genes per group, ranked by `marker_score`/`specificity` with `pseudo_R2` and `marker_test_p_value`. `group_cells_by` must be a column in `colData(cds)` (e.g. `"cluster"`, or a cell-type annotation column). Visualize selected markers with `plot_genes_by_group(cds, top_markers$gene_id, group_cells_by = "cluster")`. Results are returned, not stored on the object.
-NEVER subset cells before `top_markers()` — always run it on the full `cds`. `top_markers` finds genes that distinguish each group from the rest of the dataset, so it needs every cell present; restricting to one cell type / cluster first removes the comparison population and yields meaningless or empty markers. To focus on a subset, keep the full `cds` and use `group_cells_by` (and, if needed, inspect only the rows of the result for the group you care about).
 
 ## Differential Expression
 Purpose: Find genes that distinguish groups of cells (clusters, cell types, conditions).
 
 **Primary path — `top_markers()` (use this for almost all marker, but this is not a differential expression workflow):**
-`top_markers(cds, group_cells_by = "<colData column>", cores = 1)` returns a data.frame of the most specific genes per group, ranked by `marker_score`/`specificity` with `pseudo_R2` and `marker_test_p_value`. `group_cells_by` must be a column in `colData(cds)` (e.g. `"cluster"` or a cell-type annotation). It is robust, fast, and needs no model specification — prefer it whenever the question is "which genes mark this group?". Keep `cores = 1` for stability under rpy2. ALWAYS run it on the full `cds` — never subset cells first (it compares each group against the rest of the dataset, so the other cells must be present); to focus, set `group_cells_by` and read only the result rows for your group of interest.
+`top_markers(cds, group_cells_by = "<colData column>", cores = 1)` returns a data.frame of the most specific genes per group, ranked by `marker_score`/`specificity` with `pseudo_R2` and `marker_test_p_value`. `group_cells_by` must be a column in `colData(cds)` (e.g. `"cluster"` or a cell-type annotation). It is robust, fast, and needs no model specification — prefer it whenever the question is "which genes mark this group?". Keep `cores = 1` for stability under rpy2.
 
 **Reserved path — `fit_models()` (ONLY for an explicit condition contrast):**
 `fit_models()` fits a per-gene GLM and is the model-based DE analog of scanpy's `rank_genes_groups`. It is fragile: it fails when the grouping variable has fewer than two levels present in the subset, when genes are near-all-zero, or when code guesses the coefficient term/column names. Use it only for a deliberate contrast (e.g. disease vs. control within one cell type), and always follow this defensive recipe — never guess term or column names:
@@ -36,7 +35,7 @@ print(unique(ct$term)); print(colnames(ct))             # discover real term/col
 res <- ct[ct$status == "OK" & ct$term != "(Intercept)", ]
 res <- res[, intersect(c("gene_short_name","term","estimate","p_value","q_value"), colnames(res))]
 ```
-Note: the example CDS is already preprocessed/aligned/reduced/annotated — do NOT re-run `preprocess_cds`/`align_cds`/`reduce_dimension`/`cluster_cells` before DE. Run `top_markers()` on the full `cds` (never subset cells for it). Cell subsetting (`cds[, cells_of_interest]`) is only for the reserved `fit_models()` contrast above.
+Note: the example CDS is already preprocessed/aligned/reduced/annotated — do NOT re-run `preprocess_cds`/`align_cds`/`reduce_dimension`/`cluster_cells` before DE; subset and go straight to `top_markers`/`fit_models`.
 
 ## Trajectory and Pseudotime Analysis
 Purpose: Model continuous developmental or differentiation processes.
