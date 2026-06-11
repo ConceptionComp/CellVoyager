@@ -13,7 +13,7 @@ from cellvoyager.execution.legacy import IdeaExecutor
 from cellvoyager.logger import Logger
 from cellvoyager.deepresearch import DeepResearcher
 
-AVAILABLE_PACKAGES = "monocle3, SingleCellExperiment, Matrix, ggplot2, patchwork"
+AVAILABLE_PACKAGES = "monocle3, SingleCellExperiment, Matrix, ggplot2"
 
 
 class AnalysisAgentV2:
