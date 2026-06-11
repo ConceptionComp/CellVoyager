@@ -733,9 +733,8 @@ warnings.filterwarnings('ignore')
 print("Loading data...")
 ro.r('library(monocle3)')
 
-# Source curated house helpers (detectQC, filter_cds_genes/cells, get_avg_expr,
-# downsample_cds_by*, get_colors, feature_plot_flexible, plot_genes_flexible).
-# A load failure must not abort the run.
+# Source curated house helpers (filter_cds_genes, feature_plot_flexible,
+# plot_genes_flexible, detectQC). A load failure must not abort the run.
 try:
     ro.r('''tryCatch(source("{cv_helpers_path}"),
                      error = function(e) message("cv_helpers.R failed to load: ", conditionMessage(e)))''')
