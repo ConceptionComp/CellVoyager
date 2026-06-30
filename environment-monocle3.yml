@@ -1,0 +1,75 @@
+# CellVoyager monocle3 backend environment.
+#
+# Single env that runs BOTH the CellVoyager Python orchestrator AND the R
+# monocle3 analysis backend, bridged with rpy2. This is the kernel env for the
+# monocle3 migration (see docs/specs/monocle3-migration.md).
+#
+# Create it with:
+#   conda env create -f environment-monocle3.yml
+#   conda activate CellVoyager-r
+#
+# Notes / why this shape:
+# - Modeled on environment-rds2h5ad.yml (the "r_h5ad"-style env) but unified:
+#   it adds rpy2 + monocle3 so generated R code runs in-process via %%R.
+# - This machine's conda is osx-64 (Rosetta). Modern r-monocle3 (1.3.1, R 4.3)
+#   is published for osx-64 on bioconda; native osx-arm64 only has an ancient
+#   0.2.0. Keep this env osx-64 so monocle3 installs from conda (no GitHub
+#   compile). Do NOT use system R — it segfaults loading monocle3 native modules
+#   (see memory: rds-to-h5ad-conversion).
+# - Python pinned to 3.10 (rpy2 wheels + CellVoyager deps); R pinned to 4.3 to
+#   match the available r-monocle3 build.
+# - rpy2 pinned to 3.5.17, NOT the latest 3.6.x: rpy2 3.6 needs the R_getVar
+#   symbol added in R 4.5, but conda r-monocle3 only builds against R 4.3/4.4,
+#   so 3.6 fails to load libR. 3.5.17 works with R 4.3.
+# - r-terra is an undeclared runtime dep of bioconda r-monocle3 (load fails
+#   without it), so we pin it explicitly here.
+#
+# IMPORTANT runtime requirement: rpy2 must be told which R to use, or it grabs
+# the system arm64 R and dies on an arch mismatch (this conda is x86_64/Rosetta).
+# Set R_HOME to this env's R. The Jupyter kernelspec does this via an "env" block:
+#   "env": { "R_HOME": "<prefix>/lib/R", "PATH": "<prefix>/bin:${PATH}" }
+# Register the kernel after creating the env:
+#   conda activate CellVoyager-r
+#   python -m ipykernel install --user --name CellVoyager-r --display-name CellVoyager-r
+#   # then add the R_HOME/PATH env block to the generated kernel.json
+name: CellVoyager-r
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.10
+
+  # --- R backend (monocle3 analysis + ggplot2 plotting) ---
+  - r-base=4.3
+  - r-monocle3=1.3.1
+  - r-terra            # undeclared runtime dep of bioconda r-monocle3
+  - bioconductor-singlecellexperiment
+  - bioconductor-summarizedexperiment
+  - r-matrix
+  - r-ggplot2
+
+  # --- Python orchestrator runtime ---
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - pillow
+  - nbformat
+  - nbconvert
+  - ipykernel
+  - tqdm
+  - python-dotenv
+  # Retained transitionally until the anndata/h5py summarizer path is replaced
+  # by the rpy2 CDS summarizer (spec section 4.3); prune afterward.
+  - anndata
+  - h5py
+  - pip
+  - pip:
+      - rpy2==3.5.17   # 3.6.x requires R>=4.5 (R_getVar); we run R 4.3
+      - openai
+      - anthropic
+      - markdown
+      - streamlit
+      - streamlit-extras
+      - claude-agent-sdk

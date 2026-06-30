@@ -1,26 +1,29 @@
 Guidelines for constructing the analyses:
-    1. The analyses should focus on the central disease/condition in the paper but must analyze the disease/condition in a novel way. As a result, you must ensure that the analysis has minimal overlap with both the analyses in the paper and with those already attempted.
+    1. The analyses should focus on the central conclusions and hypotheses in the paper but must analyze the topic in a novel way. As a result, you must ensure that the analysis has minimal overlap with both the analyses in the paper and with those already attempted.
     2. When relevant, use statistical tests to determine statistical significance. Ensure that you are printing the results of these
-    3. When relevant, create figures of your results. If you want to display multiple figures, display them in a grid and display that.
-    4. For analyses that depend on celltype, look at each celltype separately. Focus on the celltypes that you think will be most relevant.
-    5. For suggesting novel analyses not present in the paper, focus on using new computational methods, looking at new celltypes/genes/features, and finding new ways to visualize the dataset.
+    3. Create figures of your results as often as possible. Make them READABLE: set the figure size on every plotting cell via the cell-magic line (e.g. `%%R -w 14 -h 9 --units in -r 150`) and scale the canvas to the number of panels — never cram many facets into the tiny default 480x480 canvas. Prefer fewer, larger panels; split a busy figure across separate cells rather than shrinking it. See the R skill for details.
+    4. Present gene lists, module compositions, marker/DE results, and enrichment results as tables via `knitr::kable` (build a tidy data.frame, select the meaningful columns, head() to a sensible number of rows) — do NOT leave them as raw printed vectors. Every gene list or module result the reader is meant to act on must be tabulated or plotted.
+    5. For suggesting novel analyses not present in the paper, focus on using new computational methods, looking at new celltypes/genes/features, and finding new ways to visualize the dataset. If the dataset has NO existing cell-type annotation (check colData first — common for single-sample datasets), identifying and annotating cell types (cluster -> per-cluster markers -> GO/known-marker annotation -> store an `assigned_cell_type` column) is itself a high-value analysis that grounds everything downstream; prefer it over running trajectories/modules on unlabeled clusters. When conditions/genotypes/samples are present, cell-type COMPOSITION analysis (proportion of each cell type per condition, via stacked/filled bar charts + a chisq/fisher test on the cell-type × condition table) is a high-value, low-risk comparative analysis. Note the lab's standard colData columns are `clusters` (cluster ids) and `assigned_cell_type` (curated labels) — reuse them rather than recomputing.
     6. Each analysis should be entirely self-contained, not relying on any external analyses or datasets. It should be able to be run without changing anything.
-    7. You can only use the following Python packages: {available_packages}. DO NOT USE ANY OTHER PACKAGES.
-    8. Make sure to only use data found in the anndata object. Take advantage of as much of the metadata information as possible.
-    9. The path to the anndata object is {adata_path}
-    10. The analysis should be focused on one core goal/hypothesis. It should not branch out from this significantly. 
-    11. DO NOT LOAD THE anndata file, it is already in memory (access it with the variable name adata)
-    12. Display all figures. Never save them to a file.
+    7. All code must be R run through monocle3, NOT Python/scanpy. Write the R code inside an IPython `%%R` cell-magic block (rpy2 is loaded via `%load_ext rpy2.ipython`); for short snippets you may instead use `rpy2.robjects.r(...)`. You can only use the following R packages: {available_packages}. DO NOT USE ANY OTHER PACKAGES.
+    8. Make sure to only use data found in the Monocle3 cell_data_set object. Take advantage of as much of the metadata information as possible (colData for cell metadata, rowData/fData for gene metadata, reducedDims for embeddings, the counts/expression assays).
+    9. The path to the Monocle3 cell_data_set `.RDS` file is {adata_path}
+    10. The analysis should be focused on one core goal/hypothesis. It should not branch out from this significantly.
+    11. DO NOT LOAD THE `.RDS` file — the Monocle3 cell_data_set is already in memory in the R global environment under the variable name `cds`. Reuse it directly across `%%R` cells (objects persist in `R_GlobalEnv`).
+    12. Display all figures inline (print the ggplot object). Never save them to a file.
     13. The analyses should be standard and should be analyses you think the paper missed.
-    14. You have access to all previous variables/imports so DO NOT re-import or re-compute things unless completely necessary
+    14. You have access to all previous variables/objects in the R session, so DO NOT re-load or re-compute things unless completely necessary. Remember R is 1-indexed.
+    15. Gene modules are never an endpoint. If you run `find_gene_modules`, you MUST, in the same or the immediately following step, make the result actionable: (a) tabulate the top genes per module (gene_short_name) with knitr::kable, (b) annotate the modules biologically — GO enrichment via clusterProfiler::enrichGO (use org.Hs.eg.db for human / org.Mm.eg.db for mouse, keyType matching the rownames, universe = the tested genes), or, if GO is unilluminating, score the modules against known marker sets, and (c) visualize module activity (faceted UMAP and/or a module×cell-group heatmap) and test condition differences statistically. Do not conclude an analysis on "we found N modules" with no genes named, no enrichment, and no actionable interpretation.
 
-Common scanpy API pitfalls to avoid:
-    - sc.tl.dpt() does NOT accept a 'root' keyword argument. To set the root cell, assign adata.uns['iroot'] = <cell_index> BEFORE calling sc.tl.dpt(adata).
-    - sc.pl.paga_compare() and any plot requiring adata.uns['paga']['pos'] will fail unless sc.pl.paga(adata) has been called first to populate positions. Always call sc.pl.paga(adata) before sc.pl.paga_compare() or any PAGA embedding plot.
-    - sc.tl.rank_genes_groups() with method='wilcoxon' or 'logreg' requires the data to be in a compatible state; ensure normalization/log1p is done beforehand.
-    - When using sc.pp.neighbors(), n_neighbors must be less than the number of cells in the dataset.
-    - adata.obs columns sometimes have numpy structured/record dtype (e.g. dtype=[('female', '<f8'), ('male', '<f8')]). Applying numpy ufuncs (np.minimum, np.maximum, arithmetic) directly to such columns causes UFuncTypeError. Always extract a plain array first: use .astype(float), or index the field explicitly (col['female']), or convert via pd.DataFrame(col) before any numeric operations.
+Common monocle3 (via rpy2) API pitfalls to avoid:
+    - The data handle is the R object `cds` (a cell_data_set), NOT a Python `adata`. Access components with R accessors: colData(cds), rowData(cds), reducedDims(cds), assay(cds, "counts") / exprs(cds), and dim(cds) which returns [genes, cells].
+    - plot_cells(cds) requires reduce_dimension(cds) to have populated a UMAP embedding first. To color by cluster you must run cluster_cells(cds) first; to color by pseudotime you must run learn_graph(cds) and order_cells(cds) first.
+    - cluster_cells(cds) depends on reduce_dimension(cds); learn_graph(cds) depends on cluster_cells(cds) (it uses partitions); order_cells(cds) depends on learn_graph(cds) and needs a root (root_pr_nodes or root_cells).
+    - top_markers(cds, group_cells_by="...") requires the grouping column to exist in colData(cds) (e.g. clusters from cluster_cells, or an annotation column). Marker stats are returned as a data.frame, not stored on the object.
+    - graph_test(cds, neighbor_graph="principal_graph") requires learn_graph(cds) first; graph_test(..., neighbor_graph="knn") requires reduce_dimension(cds).
+    - Genes are addressed by rownames(cds); a human-readable symbol usually lives in rowData(cds)$gene_short_name. Subset genes/cells with R bracket syntax cds[gene_rows, cell_cols], not pandas indexing.
+    - A ggplot is only rendered when the plot object is printed. At the top level of a `%%R` cell, evaluate/print the plot object (e.g. `p` or `print(p)`); assigning it to a variable without printing shows nothing.
 
-Here is a summary of core single-cell analyses commonly done with the python libraries available to you:
+Here is a summary of core single-cell analyses commonly done with the R packages available to you:
 {analyses_overview}
 

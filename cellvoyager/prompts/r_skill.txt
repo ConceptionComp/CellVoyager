@@ -1,0 +1,473 @@
+================================================================================
+R + MONOCLE3 SKILL (read this carefully — you are far more fluent in Python/scanpy
+than in R/monocle3, and most failed cells come from R-language and monocle3-API
+mistakes, not from bad ideas). All analysis code MUST be R run through monocle3 on
+the already-loaded `cds`. Follow the patterns below exactly.
+================================================================================
+
+⛔⛔ ABSOLUTE RULE #1 — NEVER FABRICATE, MOCK, OR SIMULATE DATA ⛔⛔
+This is a real scientific analysis on real cells. Inventing data silently produces
+fake findings that look real and invalidates the ENTIRE run. Therefore:
+- NEVER create mock/dummy/placeholder/synthetic/example data of ANY kind. Do NOT use
+  `rsparsematrix`, `matrix(rnorm(...))`, `sample(...)`, or `new_cell_data_set(...)` to
+  manufacture an expression matrix, a cds, gene modules, DE results, p-values, scores,
+  or annotations. There is exactly ONE real dataset: the `cds` already in memory.
+- NEVER write defensive "make this runnable in isolation" scaffolding such as
+  `if (!exists("x")) { ...create fake x... }`. Cells are NOT run in isolation — every
+  `%%R` cell shares one R session, so objects from earlier cells (`cds_sub`,
+  `gene_module_df`, marker tables, etc.) ARE already present. Use them directly.
+- If a required object is genuinely missing, do NOT invent it — COMPUTE it properly
+  from `cds` with the real monocle3 call (e.g. actually run `find_gene_modules`,
+  `fit_models`, `top_markers`), or if that is impossible, STOP and print a clear
+  message saying which object is missing and why. A failed/blocked step is fine; a
+  fabricated result is never fine.
+- Any comment containing the words "mock", "dummy", "placeholder", "for demonstration",
+  or "in a real workflow" is a red flag that you are about to fabricate — don't.
+The harness rejects cells that contain these patterns, so they will not run anyway.
+
+## 0. Execution model (rpy2 inside one Python kernel)
+- Write R inside an IPython `%%R` cell-magic block. `rpy2.ipython` is already loaded
+  and the Monocle3 cell_data_set is already in memory as the R variable `cds` in
+  `R_GlobalEnv`. Reuse it directly. NEVER `readRDS(...)` again.
+- Objects you create in one `%%R` cell PERSIST into later `%%R` cells (same R global
+  env). Do not recompute UMAP/clusters/markers if a previous cell already did it.
+- For a one-liner you may use `rpy2.robjects.r("...")` from Python, but prefer `%%R`
+  for anything multi-line — it is far less error-prone than escaping R inside a string.
+- Do NOT mix Python and R in the same `%%R` cell. No pandas, no numpy, no scanpy,
+  no `adata`. The handle is `cds`, full stop.
+
+## 1. R language gotchas for someone who thinks in Python
+- Assignment is `<-` (use it; `=` works for args but `<-` is idiomatic).
+- R is 1-INDEXED and ranges are INCLUSIVE: `x[1]` is the first element, `1:5` is
+  c(1,2,3,4,5). There is no `x[0]`.
+- Vectors are built with `c(...)`: `c("a","b")`, `c(1,2,3)`. There is no Python list.
+- `length(x)` not `len(x)`. `nrow(df)` / `ncol(df)` for 2-D. `nchar()` for strings.
+- Booleans are `TRUE`/`FALSE` (or `T`/`F`). Null is `NULL`; missing is `NA`; test with
+  `is.null()` / `is.na()` (NEVER `x == NA`). Logical ops on vectors use single
+  `&` / `|`; use `&&` / `||` ONLY for scalar control flow.
+- Membership: `x %in% c("a","b")`. Negate a set test with `!(x %in% y)`.
+- No f-strings. Build strings with `paste0(a, b)`, `paste(a, b, sep="_")`, or
+  `sprintf("%s has %d cells", name, n)`.
+- `$` accesses a named column/element: `colData(cds)$cell_type`. `[[` also works:
+  `colData(cds)[["cell_type"]]`. `[` keeps the container type.
+- Comments start with `#`. There is no `//` or `/* */`.
+- Loops exist (`for (i in seq_len(n)) { ... }`) but prefer vectorized ops and the
+  apply family: `sapply`, `vapply`, `lapply`, `tapply`, `aggregate`.
+- A function's LAST expression is its return value; `return()` is optional.
+- `table(x)` is your `value_counts()`. `sort(table(x), decreasing=TRUE)` to rank.
+- `head(x, n)` / `tail(x, n)`. `unique(x)`, `sort(x)`, `order(x)` (order returns
+  indices; sort returns values). `which(cond)` returns indices where TRUE.
+- Coerce types explicitly: `as.numeric`, `as.character`, `as.factor`, `as.data.frame`,
+  `as.matrix`. A `factor`'s categories are `levels(f)`; reorder/relabel via `factor(x,
+  levels=...)`. Beware `as.numeric(factor)` gives level codes, not the labels.
+
+## 2. The cell_data_set (`cds`) — accessors (this is NOT an AnnData)
+- `dim(cds)` returns c(n_genes, n_cells) — GENES FIRST, then cells (opposite of
+  AnnData's [cells, genes]). So genes = `nrow(cds)`, cells = `ncol(cds)`.
+- Cell metadata (≈ adata.obs): `colData(cds)`. It is a DataFrame-like S4 object;
+  wrap in `as.data.frame(colData(cds))` before ggplot or dplyr-style work.
+  A single column: `colData(cds)$cell_type`. Add one: `colData(cds)$foo <- values`.
+- Gene metadata (≈ adata.var): `rowData(cds)` (alias `fData(cds)`). Human-readable
+  symbols usually live in `rowData(cds)$gene_short_name`; rownames are often IDs.
+- Embeddings (≈ adata.obsm): `reducedDims(cds)` is a list; a specific one is
+  `reducedDim(cds, "UMAP")` or `reducedDims(cds)[["UMAP"]]` (also "PCA", "Aligned").
+- Expression: `exprs(cds)` or `assay(cds, "counts")` — a sparse Matrix (genes x cells).
+  `counts(cds)` may also exist. Normalized values: `normalized_counts(cds)`.
+- Subset like a matrix, genes-then-cells: `cds[gene_rows, cell_cols]`. Examples:
+  `cds[, colData(cds)$cell_type == "Neuron"]` (cells), `cds[c("GENE1","GENE2"), ]`
+  (genes by rowname). Do NOT use pandas `.loc`/`.iloc`.
+- To get a gene's row by symbol: `idx <- which(rowData(cds)$gene_short_name == "SOX2")`
+  then index `exprs(cds)[idx, ]`.
+
+⛔ GENE IDs: `rownames(cds)` are the gene IDs (often Ensembl, e.g. "ENSG00000...").
+   `gene_short_name` (e.g. "SOX2") is a SEPARATE column, NOT the rownames. Result tables
+   from `graph_test`, `top_markers`, `coefficient_table`, etc. are indexed by these SAME
+   rownames — so `row.names(graph_test_result)` already match `rownames(cds)` exactly.
+   To subset the cds to result genes, index DIRECTLY:
+       sig_ids <- row.names(subset(pr_test, q_value < 0.05))
+       cds[sig_ids, ]                       # works — same ID space, no remapping
+   NEVER "match" result rows to the cds via `gene_short_name` symbols — symbols are not
+   the rownames, so that intersect returns 0 and the step fails. If you ever need a
+   defensive guard, intersect against rownames: `intersect(sig_ids, rownames(cds))` —
+   but with a result table from THIS cds it is unnecessary. Keep gene plumbing trivial.
+
+⛔ BEFORE SUBSETTING ON ANY METADATA COLUMN — VERIFY THE COLUMN NAME AND THE EXACT
+   CATEGORY STRINGS. The #1 cause of repeated "0 cells / empty result" failures is
+   filtering on a column that does not contain your value, or copying a label from the
+   PAPER PROSE that is not the stored category. Example mistakes seen in this pipeline:
+   filtering `individual_cellline == "HL034"` when the cell line actually lives in
+   `cellline_detail`, or `assigned_cell_type == "HL034-specific"` when the real stored
+   value is `"chr5-triploidy"`. The paper's wording ("the HL034-specific cluster") is
+   NOT guaranteed to match a colData value.
+   Required pattern — discover, then filter, then assert non-empty, all in ONE cell:
+   ```r
+   print(colnames(colData(cds)))                       # confirm the column exists
+   print(table(colData(cds)$cellline_detail))          # see the REAL values + counts
+   print(table(colData(cds)$assigned_cell_type))
+   cds_sub <- cds[, colData(cds)$cellline_detail == "HL034" &
+                    colData(cds)$assigned_cell_type %in% c("chr5-triploidy", "Naive-like")]
+   stopifnot(ncol(cds_sub) > 0)                         # FAIL LOUDLY if the filter is empty
+   cat(sprintf("cds_sub: %d cells\n", ncol(cds_sub)))
+   ```
+   The dataset summary you were given lists each colData column with its real values
+   (and counts) — use those EXACT strings, never a paraphrase from the paper text. If a
+   subset comes back empty, the fix is to re-check the column/value with `table()`, NOT
+   to relax thresholds or invent data.
+
+## 3. monocle3 workflow — RESPECT THE ORDER (most "object not found"/empty-plot
+##    errors are a skipped prerequisite). Each step mutates and RETURNS cds — you
+##    MUST reassign: `cds <- step(cds)`.
+
+   ⛔⛔ HARD RULE — NEVER RE-COMPUTE THE EMBEDDING. `preprocess_cds` (PCA),
+   `reduce_dimension` (UMAP), and `align_cds` (batch alignment) are FORBIDDEN on
+   EVERY object in this pipeline — the full `cds` AND any subset of it. The provided
+   cds is already fully processed (the dataset summary lists its `reducedDims`: PCA,
+   Aligned, UMAP), and these are RETAINED when you subset: `cds_sub <- cds[, cells]`
+   keeps the parent's PCA/UMAP coordinates and cell-type annotations for those cells.
+   Re-embedding a subset destroys consistency with the annotated dataset and the
+   paper, wastes minutes, and is exactly the bug we are preventing. The harness BLOCKS
+   any cell that calls `preprocess_cds`, `reduce_dimension`, or `align_cds`.
+   ⛔ STRONG RULE — DO NOT RE-CLUSTER IF CLUSTERS/ANNOTATIONS ALREADY EXIST. Before ever
+   calling `cluster_cells`, CHECK what the object already carries: `clusters(cds)` /
+   `partitions(cds)`, a PRE-STORED cluster column in colData (OFTEN `colData(cds)$clusters`,
+   sometimes `cluster`/`seurat_clusters`/`leiden`), and cell-type annotation columns
+   (`colnames(colData(cds))`, e.g. `cell_type`/`assigned_cell_type`). These are RETAINED on
+   subsets. If clusters, partitions, or a cell-type annotation are already present, REUSE THEM — do not run
+   `cluster_cells` again. Re-clustering throws away the dataset's curated, paper-consistent
+   labels, invents a fresh arbitrary cluster numbering that no longer matches anything, and
+   on a large subset is slow. Default to NOT clustering.
+   The ONLY legitimate reason to call `cluster_cells` is when the object genuinely has no
+   usable partitions for a step that strictly needs them — e.g. `learn_graph` requires
+   partitions and `partitions(cds_sub)` is empty. Even then, prefer running it on a focused,
+   biologically coherent subset, and reuse the result rather than re-running it per step.
+   ✅ When you do need partitions: `cluster_cells(cds_sub, ...)` reuses the embedding (it
+   never re-embeds) — that part is fine.
+   So for trajectory on a subset: subset → (ONLY IF no partitions) `cluster_cells` →
+   `learn_graph` → `order_cells(root=...)`, with NO preprocess_cds / reduce_dimension anywhere.
+   Always reuse: `reducedDim(cds_sub, "UMAP")`, `clusters(cds_sub)`,
+   `colData(cds_sub)$<annotation>`.
+
+   Workflow order (the provided cds already has steps 1–2 done — NEVER redo them;
+   step 3 may be re-run on a subset):
+1. [DONE, NEVER RE-RUN] `preprocess_cds` — PCA already present; forbidden.
+2. [DONE, NEVER RE-RUN] `reduce_dimension` — UMAP already present; forbidden.
+   ⛔ PREREQUISITE for steps 3–5: `cds_sub` must be ONE continuous lineage, not multiple
+   distinct cell-type clusters. Pseudotime across unrelated clusters is invalid (see §7) —
+   if the subset is a mix of cell types / multiple partitions, do NOT do trajectory.
+3. `cds_sub <- cluster_cells(cds_sub)`                   # ONLY if partitions(cds_sub) is empty — else reuse existing
+4. `cds_sub <- learn_graph(cds_sub)`                     # needs partitions; ONE lineage only; SLOW on >~10k cells — subset first
+5. `cds_sub <- order_cells(cds_sub, root_pr_nodes = ...)` # pseudotime; needs step 4 +
+   a root (root_pr_nodes or root_cells).
+   ⛔ CRITICAL — `order_cells()` WITH NO ROOT ARGUMENT OPENS AN INTERACTIVE WIDGET THAT
+   HANGS THE KERNEL FOREVER (no error, no output, the whole run stalls). You MUST
+   pass `root_pr_nodes=` or `root_cells=` programmatically, EVERY time. Safe pattern:
+       cds <- order_cells(cds, root_cells =
+                colnames(cds)[colData(cds)$assigned_cell_type == "<your root type>"])
+   And NEVER call `plot_cells(..., color_cells_by="pseudotime")`, `pseudotime(cds)`,
+   or `plot_genes_in_pseudotime(...)` BEFORE a successful `order_cells()` — that errors
+   with "No pseudotime for UMAP calculated". Order: learn_graph → order_cells(root=...)
+   → only THEN plot/color by pseudotime, all guarded in the right sequence.
+   (A safety net auto-picks a root if you omit one — you'll see a "[CellVoyager]
+   auto-selected root" message — but that root is arbitrary, so still pass a
+   biologically chosen `root_cells`/`root_pr_nodes` for meaningful pseudotime.)
+- ALWAYS inspect what is already populated before computing anything: check
+  `reducedDimNames(cds)` and `colnames(colData(cds))`. The provided `cds` already
+  has PCA/UMAP/annotations — build on them, do not recreate them.
+- Accessors after the fact: clusters `clusters(cds)`; partitions `partitions(cds)`;
+  pseudotime `pseudotime(cds)` (only after order_cells).
+  ✅ PRE-STORED CLUSTERS & CELL TYPES: these datasets OFTEN already ship cluster labels and
+  cell-type annotations as colData columns. The lab's standard names are
+  `colData(cds)$clusters` (string cluster ids, stored via
+  `colData(cds)$clusters <- as.character(clusters(cds))`) and
+  `colData(cds)$assigned_cell_type` (the curated cell-type label, sometimes with suffixed
+  variants like `assigned_cell_type_blastocyst`). Also seen: `cluster`, `seurat_clusters`,
+  `leiden`, `cell_type`. ALWAYS `print(colnames(colData(cds)))` first; if such a column
+  exists it is a ready-made grouping — REUSE it (for faceting and
+  `top_markers(group_cells_by="assigned_cell_type")`) and do NOT run `cluster_cells` again.
+  ✅ IF YOU MUST CLUSTER (no usable partitions for a step that needs them): the lab tunes
+  `cluster_cells` with the nearest-neighbor count `k` (e.g. `cluster_cells(cds_sub, k = 15)`,
+  typical range k≈12–35; higher k → fewer/coarser clusters), NOT `resolution`. Then store
+  it as a column: `colData(cds_sub)$clusters <- as.character(clusters(cds_sub))`.
+  ⚠️ Separately, the monocle3 `cluster_cells()` FUNCTION does NOT add a `cluster` column to
+  `colData(cds)` — clusters it computes live ONLY behind the `clusters(cds)` accessor. So
+  after calling `cluster_cells`, `colData(cds)$cluster` / `"cluster" %in% colnames(colData(cds))`
+  are still EMPTY/FALSE. To use freshly computed clusters as a metadata column, assign them:
+  `colData(cds)$cluster <- clusters(cds)`. (Note: `top_markers(cds, group_cells_by="cluster")`
+  is a special case — it resolves "cluster"/"partition" internally, so it works without the
+  assignment.)
+
+## 4. Differential expression & markers
+- Cluster/group markers (≈ rank_genes_groups): `top_markers(cds,
+  group_cells_by="clusters", reference_cells=1000)`. The grouping column MUST already
+  exist in colData — prefer the pre-stored `clusters` or `assigned_cell_type` (see §3),
+  do not re-cluster just to get a grouping. Returns a data.frame — it is NOT stored on
+  cds; assign it: `markers <- top_markers(...)`.
+  Lab idiom (use it): cap genes per group and the GLM iterations, then filter & rank with
+  dplyr, then SHOW the markers (a kable table is not enough on its own — also plot them):
+  ```r
+  marker_test <- top_markers(cds, group_cells_by = "assigned_cell_type",
+                             genes_to_test_per_group = 15, speedglm.maxiter = 100)
+  top_markers_tbl <- marker_test %>%
+    dplyr::filter(fraction_expressing >= 0.10) %>%
+    dplyr::group_by(cell_group) %>%
+    dplyr::arrange(dplyr::desc(marker_score), .by_group = TRUE) %>%
+    dplyr::slice_head(n = 5) %>% dplyr::ungroup()
+  print(knitr::kable(top_markers_tbl, digits = 3, caption = "Top markers per group"))
+  # then VISUALIZE the markers — faceted feature plots and/or violins (see §5).
+  ```
+- Regression / model-based DE: `fit_models(cds, model_formula_str = "~cell_type")`
+  then `coefficient_table(fit)`; filter with `q_value < 0.05`. Heavy — subset genes
+  first (e.g. to expressed or marker genes) so it doesn't run forever.
+- Graph-autocorrelated genes along trajectory: `graph_test(cds,
+  neighbor_graph="principal_graph")` (needs learn_graph) or `neighbor_graph="knn"`
+  (uses the RETAINED UMAP/PCA — do NOT recompute it). Returns a data.frame ranked by
+  `morans_I` / `q_value`.
+- Gene modules (co-regulated gene programs): `find_gene_modules` uses the cds's existing
+  reduced dims (PCA/UMAP) — which a subset already RETAINS from the parent — and operates
+  on a set of genes (typically the significant `graph_test` genes). NEVER re-embed for
+  this; just reuse what is there. This is the COMPLETE canonical recipe — follow it
+  closely, keep it SIMPLE, do not add gene-ID remapping or manual aggregation:
+  ```r
+  # cds_sub already built + asserted non-empty (see §2); it keeps the parent's PCA/UMAP.
+  cds_sub <- cluster_cells(cds_sub)                          # OK: clusters/partitions only
+  pr_test <- graph_test(cds_sub, neighbor_graph = "principal_graph",
+                        cores = 4, verbose = FALSE)          # needs learn_graph first
+  sig_ids <- row.names(subset(pr_test, q_value < 0.05))      # these ARE rownames(cds_sub)
+  stopifnot(length(sig_ids) > 0)
+  gene_module_df <- find_gene_modules(cds_sub[sig_ids, ], resolution = 1e-2)
+  # gene_module_df: data.frame with columns id (= gene rownames), module, supermodule, ...
+
+  # Per-cell module activity — use aggregate_gene_expression (size-factor NORMALIZED).
+  # gene_group_df must be a 2-col data.frame: gene id + module. Rows=modules, cols=cells.
+  agg <- aggregate_gene_expression(cds_sub, gene_group_df = gene_module_df[, c("id","module")])
+  # Attach each module's score to colData for plotting:
+  for (m in rownames(agg)) colData(cds_sub)[[paste0("module_", m)]] <- as.numeric(agg[m, ])
+  # Plot a few modules (ONE faceted/combined figure — see §5), coloring by module_<m>.
+  ```
+  Pitfalls that broke past runs — avoid them:
+  • Do NOT remap genes via `gene_short_name` or a `gene_id` column — `sig_ids` already
+    match `rownames(cds_sub)`; `cds_sub[sig_ids, ]` just works. Inventing ID-matching
+    yields a 0-gene intersection and a self-inflicted `stop()`.
+  • Do NOT replace `aggregate_gene_expression` with `colMeans(exprs(cds))` — that averages
+    RAW counts (wrong); aggregate_gene_expression normalizes properly.
+  • `rowData()`/`exprs()`/`colData()` take the cds, NOT a bare matrix — calling
+    `rowData(some_matrix)` errors with "unable to find an inherited method".
+  • If `find_gene_modules` genuinely errors or returns nothing, report it — never mock.
+
+  ⛔ MODULES ARE NEVER THE ENDPOINT. A bare list of module IDs and per-cell activity scores
+  tells the reader NOTHING actionable. Any step that runs `find_gene_modules` is INCOMPLETE
+  until the SAME or the immediately following step does ALL of:
+    (1) TABULATES the genes — for each module print a table (knitr::kable, §5b) of the top
+        genes by `gene_short_name` and the module size, so the reader sees what is in them.
+    (2) ANNOTATES the modules biologically — run GO enrichment (recipe below) on each
+        module's genes, OR if GO returns nothing useful, score modules against known marker
+        sets (naive/primed/neuronal/etc.) — give each module a putative biological label.
+    (3) VISUALIZES module activity (faceted UMAP and/or a module×cell-group heatmap) and,
+        where conditions differ, tests the differences statistically (§6).
+  Do NOT end an analysis on "we found N modules." Either follow through here, or do not run
+  find_gene_modules at all.
+
+  GO ENRICHMENT — clusterProfiler::enrichGO (gene IDs need conversion). `rownames(cds)` are
+  usually Ensembl gene IDs (ENSG…/ENSMUSG…). enrichGO needs them mapped; pass
+  `keyType="ENSEMBL"` and the right OrgDb: `org.Hs.eg.db` (human) / `org.Mm.eg.db` (mouse).
+  The UNIVERSE must be all tested genes (e.g. all `graph_test` genes), not the whole genome.
+  ```r
+  library(clusterProfiler); library(org.Hs.eg.db)   # org.Mm.eg.db for mouse
+  # Strip any Ensembl version suffix (ENSG000001.4 -> ENSG000001) before mapping.
+  strip_ver <- function(x) sub("\\..*$", "", x)
+  universe_ids <- strip_ver(sig_ids)                       # background = tested genes
+  for (m in sort(unique(gene_module_df$module))) {
+    mod_ids <- strip_ver(subset(gene_module_df, module == m)$id)
+    ego <- enrichGO(gene = mod_ids, universe = universe_ids, OrgDb = org.Hs.eg.db,
+                    keyType = "ENSEMBL", ont = "BP", pAdjustMethod = "BH",
+                    qvalueCutoff = 0.05, readable = TRUE)
+    if (!is.null(ego) && nrow(as.data.frame(ego)) > 0) {
+      cat(sprintf("\n## Module %s — top GO BP terms\n", m))
+      print(knitr::kable(head(as.data.frame(ego)[, c("Description","p.adjust","Count")], 8)))
+    } else {
+      cat(sprintf("Module %s: no significant GO BP enrichment.\n", m))
+    }
+  }
+  ```
+  Notes: `ont="BP"` (also "MF"/"CC"); set `readable=TRUE` to get symbols in the output.
+  If keyType="ENSEMBL" maps almost nothing, the rownames may be symbols — then map from
+  `rowData(cds)$gene_short_name` with `keyType="SYMBOL"`. A barplot/dotplot of `ego`
+  (`barplot(ego, showCategory=10)`) makes a clean figure (size the cell — §5).
+
+  ALTERNATIVE — gprofiler2 (works on gene SYMBOLS, more species, incl. non-human/mouse):
+  `gprofiler2::gost(query = gene_symbols, organism = "hsapiens")` (use "mmusculus" for mouse;
+  g:Profiler supports many organisms). Returns `$result` (term_name, p_value, source...) —
+  no OrgDb / ID conversion needed; pass `gene_short_name` symbols directly. ⚠️ gost() calls
+  the g:Profiler web API, so it needs internet at run time — if the run is offline it will
+  error; in that case fall back to clusterProfiler::enrichGO. `gostplot(gost_res)` visualizes.
+
+  GENE-SET OVERLAPS — when comparing gene lists across conditions/cell types (e.g. markers of
+  group A vs B vs C, DE up vs down, TF vs ligand sets), show the overlap with a Venn/Euler
+  diagram: `ggVennDiagram::ggVennDiagram(list(A = vecA, B = vecB, C = vecC))` (counts, color
+  gradient) or `ggvenn::ggvenn(list(...))`. Keep it to ≤4 sets; for more, use an UpSet-style
+  summary table instead. Always also print the actual shared/unique genes as a kable table.
+
+## 5. Plotting — ggplot2 / plot_cells, ALWAYS PRINTED INLINE
+- ⛔ FIGURE SIZE — SET IT ON EVERY PLOTTING CELL. A bare `%%R` cell renders the plot at
+  the tiny 480x480 px default, so any faceted or multi-panel figure comes out unreadably
+  squished (overlapping labels, postage-stamp panels). Pass width/height/resolution on the
+  cell-magic line itself: `%%R -w 14 -h 9 --units in -r 150` (width & height in INCHES,
+  150 dpi). These args MUST be on the `%%R` line (the first line of the cell).
+  • Scale the canvas to the panel count — do NOT cram many panels into the default. Rough
+    rule: ≈3-4 inches of width PER facet column and ≈3 inches of height PER facet row, plus
+    room for the legend. A `facet_grid(cellline ~ treatment)` with 2 rows × 6 columns needs
+    roughly `-w 20 -h 8`, not the default square.
+  • Prefer FEWER, LARGER panels. If a figure would need >6-8 panels to be legible, split it
+    across SEPARATE `%%R` cells (one printed figure each) rather than shrinking everything.
+    Do NOT nest a patchwork of N plots where each is itself faceted — that multiplies panels
+    and guarantees squishing.
+  • Keep labels readable: rotate long x labels (`theme(axis.text.x=element_text(angle=45,
+    hjust=1))`), shorten sample IDs, and don't set base font sizes below ~9 pt.
+- A ggplot renders ONLY when the object is printed. At the top level of a `%%R` cell,
+  end with the bare object `p` or call `print(p)`. Assigning `p <- ggplot(...)` and
+  stopping shows NOTHING. Never `ggsave()` / never save to a file.
+- `plot_cells(cds)` uses the existing UMAP (already present / retained on subsets — never
+  recompute it). Color by metadata with
+  `color_cells_by="assigned_cell_type"` (a colData column) or `genes=c("SOX2","NANOG")` to
+  show expression. `color_cells_by="pseudotime"` needs order_cells first.
+- FEATURE-PLOT conventions the lab uses (gene expression on the UMAP): pass
+  `scale_to_range=FALSE, show_trajectory_graph=FALSE, label_cell_groups=FALSE, cell_size=0.5`
+  and add `+ theme_bw()`; facet by condition (`+ facet_wrap(~treatment)`). ALWAYS guard that
+  the gene exists first — `gene_short_name` is a column, not the rownames:
+  ```r
+  if ("SOX2" %in% rowData(cds)$gene_short_name) {
+    print(plot_cells(cds, genes = "SOX2", scale_to_range = FALSE,
+                     show_trajectory_graph = FALSE, label_cell_groups = FALSE,
+                     cell_size = 0.5) + theme_bw() + facet_wrap(~treatment))
+  }
+  ```
+- VIOLIN plots — `plot_genes_violin()` is the lab's go-to for per-group expression. It needs
+  a GENE-SUBSET cds (subset by `gene_short_name`), a grouping column, and renders one panel
+  per gene; facet by condition to compare:
+  ```r
+  genes <- c("KLF17", "TFCP2L1", "DPPA3")
+  cds_g <- cds[rowData(cds)$gene_short_name %in% genes, ]
+  print(plot_genes_violin(cds_g, group_cells_by = "assigned_cell_type", log_scale = FALSE) +
+        theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+        facet_wrap(~treatment))
+  ```
+- COMPOSITION / proportion shifts — a primary comparative analysis in this lab: how cell
+  types/clusters are distributed across conditions. Build a data.frame from colData and use
+  stacked AND filled bars (counts and proportions), then test the shift statistically (§6,
+  e.g. `chisq.test`/`fisher.test` on the cell-type × condition table):
+  ```r
+  md <- as.data.frame(colData(cds))
+  print(ggplot(md, aes(treatment, fill = assigned_cell_type)) +
+        geom_bar(position = "fill") + theme_classic() +
+        theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+        labs(y = "proportion", title = "Cell-type composition by condition"))
+  print(knitr::kable(table(md$assigned_cell_type, md$treatment), caption = "Counts"))
+  ```
+- For custom plots build a data.frame from cds and use ggplot2 directly:
+  ```r
+  df <- as.data.frame(colData(cds))
+  df$UMAP1 <- reducedDim(cds, "UMAP")[,1]
+  df$UMAP2 <- reducedDim(cds, "UMAP")[,2]
+  p <- ggplot(df, aes(UMAP1, UMAP2, color = cell_type)) +
+       geom_point(size = 0.4) + theme_minimal()
+  print(p)
+  ```
+- Facet with `+ facet_wrap(~group)`. Combine layers with `+`. Title with `+ ggtitle(...)`.
+- ONE `%%R` cell captures only ONE figure (the last printed plot). If you want to show
+  several panels (e.g. one UMAP per gene module, or per gene), you MUST EITHER (a) print
+  ONE combined figure — `plot_cells(cds, genes=c("SOX2","NANOG","GDF3"))` already lays
+  multiple genes into a single faceted plot, or build a faceted ggplot, or combine with
+  patchwork `print((p1 | p2) / (p3 | p4))` — OR (b) split the panels across SEPARATE
+  `%%R` cells, one printed plot each. Do NOT print N separate plots in one cell expecting
+  N images; only the last survives.
+- `plot_cells` "Cells aren't colored in a way that allows them to be grouped" means the
+  `color_cells_by`/`genes` value isn't a valid colData column or gene present on THAT
+  object (common after subsetting onto a new embedding) — verify the column/gene exists
+  on the object you are plotting before plotting.
+
+## 5b. Tables — render gene lists / results with knitr::kable, not raw print
+- ANY gene list, module composition, marker table, DE result, or GO result that you want
+  the reader to actually read must be shown as a TABLE via `knitr::kable`, not dumped as a
+  raw vector or `print(head(...))` console blob (those are unreadable walls of text).
+- Build a tidy data.frame first (one row per item, named columns), then:
+  `print(knitr::kable(df, digits = 3, caption = "Top markers per cluster"))`.
+  In a `%%R` cell `kable` prints a clean fixed-width/markdown table to the captured output.
+- Keep tables focused: select the columns that matter (e.g. gene_short_name, q_value,
+  module) and `head(df, 10-20)` the rows — do not print thousands of rows.
+- Example — top genes per module as one table:
+  ```r
+  mod_tbl <- do.call(rbind, lapply(sort(unique(gene_module_df$module)), function(m) {
+    ids <- subset(gene_module_df, module == m)$id
+    syms <- rowData(cds_sub)[ids, ]$gene_short_name
+    data.frame(module = m, n_genes = length(ids),
+               top_genes = paste(head(syms, 8), collapse = ", "))
+  }))
+  print(knitr::kable(mod_tbl, caption = "Gene modules: size and top genes"))
+  ```
+
+## 6. Statistics in R (print the result — don't just compute it)
+- Two groups: `wilcox.test(values ~ group, data=df)` (nonparametric) or
+  `t.test(...)`. Correlation: `cor.test(x, y, method="spearman")`.
+- Categorical association: `fisher.test(table(df$a, df$b))` or `chisq.test(...)`.
+- Multiple testing: `p.adjust(pvec, method="BH")`. Always print p-values / effect sizes,
+  e.g. `cat(sprintf("Wilcoxon p = %.3g\n", res$p.value))`.
+- `summary(model)` / `aov()` for ANOVA. `print()` or `cat()` so output is captured.
+
+## 7. Top failure modes seen in this pipeline — avoid them
+- Forgetting to reassign a monocle3 step: `reduce_dimension(cds)` without
+  `cds <- ` silently does nothing downstream. ALWAYS `cds <- step(cds)`.
+- Calling `plot_cells`/`color_cells_by="pseudotime"`/`clusters(cds)` before the
+  prerequisite step → object-not-found or empty plot. See the §3 order.
+- Treating `cds` like AnnData: `cds.obs`, `cds.X`, `cds[cells, genes]`,
+  Python indexing — all wrong. Use §2 accessors and genes-first subsetting.
+- Not printing the ggplot → blank cell (the VLM interpretation then has nothing to read).
+- Using packages outside the allowed set, or `install.packages(...)`. Only the
+  whitelisted R packages are available; do not install anything. `dplyr` and `tidyr`
+  ARE available and are the lab's standard for the marker/metadata workflow (`%>%`,
+  `filter`, `group_by`, `arrange`, `mutate`, `recode`, `pull`) — use them freely, but
+  PREFIX masked verbs (`dplyr::filter`, `dplyr::select`, `dplyr::recode`) so they don't
+  collide with base/monocle3 functions. `patchwork`/`cowplot` (panel combining),
+  `pheatmap` (heatmaps), `RColorBrewer`/`viridis` (palettes), and `ggrepel` (labels) are
+  also available. Anything NOT in the whitelist (e.g. `Seurat`, `gprofiler2`) is not.
+- `order_cells(cds)` with no root → hangs. Pass `root_pr_nodes`/`root_cells`.
+- ⛔ `learn_graph()` ON A LARGE SET → TIMEOUT (killed at the kernel limit). Its cost grows
+  with cell count AND partition count; on tens of thousands of cells (or many partitions) it
+  does not return in time. Run trajectory only on a FOCUSED, biologically continuous subset
+  (one lineage / a few thousand cells), NOT a stitched-together set of disjoint populations
+  spread across the UMAP. Cluster at a sensible (lower) resolution and subset BEFORE learn_graph.
+- ⛔⛔ DO NOT RUN PSEUDOTIME / TRAJECTORY ACROSS MULTIPLE DISTINCT CELL-TYPE CLUSTERS.
+  Pseudotime is only meaningful along ONE continuous biological process (e.g. a single
+  differentiation lineage: progenitor → intermediate → mature). It is NOT meaningful across
+  a set of separate, biologically unrelated cell types/clusters (e.g. germ cells + stroma +
+  epithelium + "rogue" populations, or several disconnected islands on the UMAP). Forcing a
+  principal graph over disjoint clusters produces a meaningless graph that stitches unrelated
+  populations together, and `order_cells` then assigns pseudotime only within the root's
+  partition — every cell in the OTHER partitions gets `Inf` pseudotime (a silent, invalid
+  result that looks like it worked). BEFORE `learn_graph`/`order_cells`, REQUIRE that the
+  object is a single coherent lineage:
+  ```r
+  # 1. The subset must be ONE lineage, not many cell types. Inspect what's in it:
+  print(table(colData(cds_sub)$assigned_cell_type))   # should be a few related states, not a zoo
+  # 2. monocle3 builds a SEPARATE graph per PARTITION — more than one means disconnected:
+  np <- length(unique(partitions(cds_sub)))
+  cat(sprintf("partitions in subset: %d\n", np))
+  if (np > 1) stop("Trajectory spans >1 partition (disconnected populations) — subset to a single lineage/partition first, or skip pseudotime.")
+  # 3. AFTER order_cells, no cell should have infinite pseudotime:
+  # pt <- pseudotime(cds_sub); stopifnot(all(is.finite(pt)))   # Inf == cells off the rooted graph
+  ```
+  If the biology is a set of distinct cell types rather than a continuum, DO NOT do trajectory
+  at all — use composition analysis, marker/DE comparisons, or per-cluster characterization
+  instead. Trajectory is the wrong tool for "what cell types are here and how do they differ."
+- ⛔ WHOLE-OBJECT `fit_models()` / `graph_test()` → TIMEOUT (killed at the kernel limit).
+  Running `fit_models(cds, ...)` or `graph_test(cds, ...)` across ALL ~tens-of-thousands of
+  cells × all genes does not return in time. For differential expression between two cell
+  groups, do ONE of:
+    • Use `top_markers(cds, group_cells_by="<col>")` — fast, returns a ranked marker table
+      (this is the preferred route for "genes that differ between groups").
+    • Subset to a CANDIDATE gene set FIRST (e.g. a few hundred HVGs, chromosome/pathway
+      genes, or prior top markers): `cds_sub <- cds[candidate_ids, ]` then `fit_models(cds_sub, ...)`.
+    • If you must use `graph_test`, call it on the principal-graph neighbor graph with a
+      gene-subsetted cds — never the full object. (`graph_test` has no `formula_str` arg;
+      it tests association with the graph, not an arbitrary formula.)
+  Likewise avoid dense `as.matrix(exprs(cds))` on the full object → OOM.
+================================================================================

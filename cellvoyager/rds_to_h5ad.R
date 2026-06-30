@@ -19,7 +19,12 @@
 #   reducedDims -> adata.obsm  (e.g. UMAP, PCA)
 #   metadata    -> adata.uns
 #
+# Setup (one time): create the conversion env from the repo spec.
+#   conda env create -f environment-rds2h5ad.yml
+#
 # Usage:
+#   conda activate rds2h5ad
+#   export RDS2H5AD_PYTHON="$(which python)"   # the env's python (has anndata)
 #   Rscript cellvoyager/rds_to_h5ad.R <input.RDS> <output.h5ad> [X_assay_name]
 #
 # Example:
