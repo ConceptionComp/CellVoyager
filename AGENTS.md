@@ -44,6 +44,7 @@
 - Keep changes minimal and consistent with the current simplified provider model.
 - When adding new local-model presets to the GUI, also update provider detection in `cellvoyager/llm_utils.py` so validation and labels stay correct.
 - Prompt templates in `cellvoyager/prompts/*.txt` are formatted with Python `.format(...)`; escape literal braces as `{{` and `}}`.
+- Exception: `cellvoyager/prompts/r_skill.txt` is the R/monocle3 skill — it is read RAW and concatenated onto `coding_guidelines` AFTER `.format(...)` in `agent.py`, so its R-code `{ }` braces are intentionally NOT escaped. Never run it through `.format(...)`. It is prepended (placed first) so it survives the executors' `coding_guidelines[:12000]` truncation in `claude.py`/`opencode.py`.
 - For planner/output-shape changes, keep prompt instructions and parser expectations aligned so retries and repair prompts match the actual schema.
 
 ## Validation

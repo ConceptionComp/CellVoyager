@@ -171,7 +171,7 @@ Suggested first step code:
 Context:
 - cds summary: {self.adata_summary[:3000]}
 - user context: {self.paper_summary[:3000]}
-- coding guidelines: {self.coding_guidelines[:3000]}
+- coding guidelines: {self.coding_guidelines[:12000]}
 
 Available actions:
 - read_notebook: {{"action":"read_notebook","args":{{}}}}

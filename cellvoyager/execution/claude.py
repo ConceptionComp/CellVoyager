@@ -1026,7 +1026,7 @@ cds summary: {self.adata_summary[:3000]}
 
 user context (dataset summary / past analyses / focus directions / biological background): {self.paper_summary[:3000]}
 
-coding guidelines: {self.coding_guidelines[:3000]}
+coding guidelines: {self.coding_guidelines[:12000]}
 """.strip()
 
     def _log_stream_item(self, item: Any) -> None:
@@ -1159,7 +1159,7 @@ cds summary: {self.adata_summary[:3000]}
 
 user context (dataset summary / past analyses / focus directions / biological background): {self.paper_summary[:3000]}
 
-coding guidelines: {self.coding_guidelines[:3000]}{feedback_section}
+coding guidelines: {self.coding_guidelines[:12000]}{feedback_section}
 """.strip()
 
     def execute_idea(self, analysis: dict[str, Any], analysis_idx: int = 0) -> str:

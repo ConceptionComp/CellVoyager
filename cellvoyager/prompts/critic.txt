@@ -6,7 +6,52 @@ Your role is to provide feedback for the first step R code as well as for the an
 Ensure that the code follows the coding guidelines below as well (R run through monocle3 inside `%%R` cells, reusing the in-memory `cds` object).
 Finally, ensure that the functions used being used properly with appropriate parameters; use the documentation
 from the functions used in the code to judge this.
-Only return the feedback, nothing else. Keep the feedback thorough but concise. 
+Only return the feedback, nothing else. Keep the feedback thorough but concise.
+
+⛔ HARD REQUIREMENTS — reject the code in your feedback if any of these fail:
+1. NO FABRICATED DATA. The code must not mock, simulate, or placeholder any data. Flag and
+   demand removal of `rsparsematrix`/`new_cell_data_set`/`matrix(rnorm(...))`/`sample(...)`
+   used to invent data, `if (!exists(...)) {{ ...create... }}` "runnable in isolation"
+   scaffolding, or comments like "mock"/"dummy"/"for demonstration"/"in a real workflow".
+   All `%%R` cells share one R session — objects from earlier steps already exist and must
+   be used directly; a missing object must be computed for real from `cds`, never invented.
+2. VERIFIED METADATA. Any subsetting/filtering on a colData column must use a column name and
+   category value that actually exist in the provided cds summary — NOT a paraphrase from the
+   paper prose. If the code filters on a column/value not present in the summary, flag it and
+   give the correct column/value. Require the code to assert the subset is non-empty
+   (`stopifnot(ncol(cds_sub) > 0)`) so empty filters fail loudly instead of producing nothing.
+3. NO RE-EMBEDDING. The cds is already fully processed and subsets RETAIN the parent's
+   PCA/UMAP/alignment + annotations. Reject any call to `preprocess_cds`, `reduce_dimension`,
+   or `align_cds` on the full object OR a subset — these are blocked by the harness. The code
+   must reuse the existing embedding. ALSO STRONGLY DISCOURAGE re-clustering: if the object
+   already has clusters/partitions (`clusters(cds)`/`partitions(cds)`) or a cell-type
+   annotation column, the code must REUSE them — flag any `cluster_cells` call that re-clusters
+   data that is already clustered/annotated (it discards curated, paper-consistent labels and
+   invents arbitrary new numbering). `cluster_cells` is justified ONLY when a step that needs
+   partitions (e.g. `learn_graph`) has none available. Trajectory on a subset should be
+   subset → (cluster_cells ONLY if no partitions) → learn_graph → order_cells(root=...), with
+   no PCA/UMAP recompute.
+4. PREREQUISITES MET. `find_gene_modules`/`graph_test` use the RETAINED reduced dims (never
+   recompute them) and a real gene set; `learn_graph` needs partitions from cluster_cells;
+   `order_cells` needs a root. Flag steps that skip a genuine prerequisite. PSEUDOTIME SCOPE:
+   trajectory/pseudotime (`learn_graph`/`order_cells`) is valid ONLY on a SINGLE continuous
+   lineage. Reject any plan that runs it across multiple distinct cell-type clusters or
+   unrelated/disconnected populations (it yields a meaningless graph and `Inf` pseudotime for
+   cells outside the rooted partition) — require the code to subset to one lineage/partition
+   first (assert `length(unique(partitions(cds_sub))) == 1`), or to drop trajectory in favor
+   of composition/marker/DE analyses when the data is a mix of cell types.
+5. MODULES MUST BE FOLLOWED THROUGH. If the code or the analysis plan runs `find_gene_modules`,
+   the plan MUST include downstream steps that make the modules actionable: tabulate the top
+   genes per module (knitr::kable), annotate them biologically (GO enrichment via
+   clusterProfiler::enrichGO with org.Hs.eg.db/org.Mm.eg.db, or marker-set scoring), AND
+   visualize/statistically compare module activity. Reject any plan that ends on raw module
+   IDs or per-cell scores with no genes named and no enrichment/interpretation — demand the
+   follow-through steps be added (within the remaining step budget).
+6. READABLE OUTPUT. Plotting code must set a figure size on the `%%R` line (e.g.
+   `%%R -w 14 -h 9 --units in -r 150`) scaled to the panel count — flag any faceted/multi-panel
+   plot left at the default 480x480 canvas, as it will render squished. Gene lists, module
+   compositions, marker/DE/GO results must be presented as `knitr::kable` tables, not raw
+   printed vectors — flag results dumped as unreadable console blobs.
 
 CRITICAL: You have at most {num_steps_left} steps remaining. Your analysis plan MUST NOT exceed {num_steps_left} steps. Do not suggest more.
 

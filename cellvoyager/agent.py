@@ -13,7 +13,12 @@ from cellvoyager.execution.legacy import IdeaExecutor
 from cellvoyager.logger import Logger
 from cellvoyager.deepresearch import DeepResearcher
 
-AVAILABLE_PACKAGES = "monocle3, SingleCellExperiment, Matrix, ggplot2"
+AVAILABLE_PACKAGES = (
+    "monocle3, SingleCellExperiment, Matrix, ggplot2, "
+    "dplyr, tidyr, patchwork, cowplot, pheatmap, RColorBrewer, ggrepel, viridis, "
+    "clusterProfiler, org.Hs.eg.db, org.Mm.eg.db, gprofiler2, "
+    "ggVennDiagram, ggvenn, knitr"
+)
 
 
 class AnalysisAgentV2:
@@ -104,6 +109,22 @@ class AnalysisAgentV2:
             adata_path=self.rds_path,
             available_packages=AVAILABLE_PACKAGES,
             analyses_overview=self._analyses_overview,
+        )
+
+        # Prepend the R/monocle3 skill: a dense, example-driven reference that closes
+        # the model's R-vs-Python fluency gap (the main source of failed cells per the
+        # monocle3-migration spec). Read raw and concatenated AFTER .format() so the
+        # literal R `{ }` braces in its code samples are not interpreted as format
+        # fields. Placed first so it survives the executors' guideline truncation.
+        r_skill = open(os.path.join(self.prompt_dir, "r_skill.txt")).read()
+        # Curated lab marker panels (somatic gonad/follicle + pluripotency/germ states)
+        # for cell-type identification. Read raw and concatenated after .format() for the
+        # same reason as r_skill (its R `list(...)`/`{ }` content is not a format string).
+        cell_type_markers = open(
+            os.path.join(self.prompt_dir, "cell_type_markers.txt")
+        ).read()
+        self.coding_guidelines = (
+            r_skill + "\n\n" + cell_type_markers + "\n\n" + self.coding_guidelines
         )
 
         self.logger = Logger(self.analysis_name, log_dir=os.path.join(log_home, "logs"))
@@ -230,11 +251,23 @@ class AnalysisAgentV2:
           u <- unique(vals)
           if (length(u) == 0L) {
             s <- "(all NA/empty)"
-          } else if (length(u) > length_cutoff) {
-            s <- paste0(paste(as.character(head(u, length_cutoff)), collapse = ", "),
-                        sprintf(" ... and %d more", length(u) - length_cutoff))
+          } else if (is.numeric(vals) && length(u) > length_cutoff) {
+            # Continuous numeric column: report range, not a value list. Filtering on
+            # exact values here is almost never correct, so don't tempt it.
+            qs <- quantile(vals, probs = c(0, 0.25, 0.5, 0.75, 1), names = FALSE)
+            s <- sprintf("[numeric] min=%.3g, q25=%.3g, median=%.3g, q75=%.3g, max=%.3g (%d unique)",
+                         qs[1], qs[2], qs[3], qs[4], qs[5], length(u))
           } else {
-            s <- paste(as.character(u), collapse = ", ")
+            # Categorical column: list the EXACT category strings with cell counts so
+            # the model filters on real values, not paraphrases from the paper prose.
+            tab <- sort(table(as.character(vals)), decreasing = TRUE)
+            shown <- head(tab, length_cutoff)
+            pairs <- sprintf('"%s" (%d)', names(shown), as.integer(shown))
+            s <- paste(pairs, collapse = ", ")
+            if (length(tab) > length_cutoff) {
+              s <- paste0(s, sprintf(" ... and %d more categories", length(tab) - length_cutoff))
+            }
+            s <- sprintf("[categorical, %d values] %s", length(tab), s)
           }
           lines <- c(lines, sprintf("  %s: %s", col, s))
         }

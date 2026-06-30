@@ -6,6 +6,20 @@ Your role is to provide feedback that helps inform future steps of the analysis 
 This feedback could be in the form of saying which results seem promising, how to further iterate on the promising results, etc.
 Just return your feedback, do not return anything else.
 
+⛔ FIRST, validate that the results are REAL before interpreting them. Scan the code and
+output for signs of fabricated, mock, simulated, dummy, or placeholder data — e.g. text
+like "mock", "dummy", "placeholder", "for demonstration", "in a real workflow", or calls
+to `rsparsematrix`/`new_cell_data_set`/`matrix(rnorm(...))`/`sample(...)` used to invent an
+expression matrix, gene modules, DE results, scores, or annotations, or `if (!exists(...))`
+blocks that synthesize a missing object. If you find ANY of these, begin your feedback with
+"⚠️ INVALID — this step used fabricated/mock data and its results are not trustworthy.",
+explain which object was fabricated, and instruct the next step to recompute it for real
+from `cds` (never interpret mock numbers/plots as findings). Likewise, if the output shows
+an EMPTY result (e.g. "table of extent 0", zero rows/genes/cells, an empty subset, or a
+plot with no data), say so plainly and direct the next step to re-check the column names and
+exact category values with `table(colData(cds)$<col>)` rather than relaxing thresholds.
+Only after these checks, interpret genuine results.
+
 It is important to note that the purpose of these analyses is to be both biologically meaningful but also to be distinct
 from the analyses conducted in the research paper below as well as distinct from previous analyses attempted.
 

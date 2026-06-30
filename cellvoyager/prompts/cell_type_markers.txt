@@ -1,0 +1,111 @@
+================================================================================
+REFERENCE CELL-TYPE MARKER PANELS (curated by the lab — human, gene_short_name symbols)
+================================================================================
+Use these when IDENTIFYING / ANNOTATING cell types or states (see the Cell Type
+Identification recipe). They are SYMBOLS that live in `rowData(cds)$gene_short_name`
+(NOT the rownames — see the gene-ID rules in the R skill). They are a starting point,
+NOT ground truth: confirm against the ACTUAL expression in `cds`, never assume a marker
+is present, and label a cluster "Unknown" rather than forcing a panel that doesn't fit.
+
+How to use them (pick what fits the question):
+- Score each cluster/group against each panel and assign the best match. Robust recipe:
+  subset each panel to genes actually present, aggregate per cell with
+  `aggregate_gene_expression` (size-factor normalized), then compare mean panel score
+  across clusters and assign `colData(cds)$assigned_cell_type` from the top-scoring panel.
+  ```r
+  panels <- SOMATIC_GONAD_MARKERS            # or PLURIPOTENCY_GERM_MARKERS, or both
+  present <- lapply(panels, function(g) intersect(g, rowData(cds)$gene_short_name))
+  present <- present[lengths(present) > 0]
+  # map panel -> the cds gene-ids (rownames) for those symbols
+  sym2id <- setNames(rownames(cds), rowData(cds)$gene_short_name)
+  ggdf <- do.call(rbind, lapply(names(present), function(p)
+            data.frame(id = sym2id[present[[p]]], panel = p)))
+  agg <- aggregate_gene_expression(cds, gene_group_df = ggdf)   # rows = panels, cols = cells
+  # per-cluster mean panel score -> winning panel per cluster:
+  cl <- as.character(clusters(cds))
+  score_by_cluster <- t(apply(agg, 1, function(v) tapply(v, cl, mean)))
+  best <- apply(score_by_cluster, 2, function(col) rownames(score_by_cluster)[which.max(col)])
+  colData(cds)$assigned_cell_type <- best[cl]
+  print(knitr::kable(as.data.frame(score_by_cluster), digits = 2,
+                     caption = "Mean panel score per cluster"))
+  ```
+- OR visualize: `plot_genes_violin(cds[rowData(cds)$gene_short_name %in% panel, ],
+  group_cells_by = "clusters")` and faceted `plot_cells(cds, genes = panel)` to eyeball
+  which clusters express a panel, then assign labels by hand.
+- ALWAYS guard gene presence (`g[g %in% rowData(cds)$gene_short_name]`) before plotting,
+  and report which panel genes were missing from the dataset.
+- These are human panels. For mouse, the orthologs are usually the same symbols in
+  Title Case (e.g. "Gata4"); intersect against the real `gene_short_name` values first.
+- Two suffixed reporter names appear ("NR5A1-CO", "FOXL2-CO") — these are codon-optimized
+  reporter knock-ins and will only be present in reporter lines; they are guarded by the
+  presence check like any other gene.
+
+--------------------------------------------------------------------------------
+PANEL SET 1 — somatic gonad / follicle / ovarian-support cell types
+(ovary/testis support, granulosa stages, stroma, theca, and common "rogue" off-target
+in-vitro identities). Paste this `list(...)` directly into a `%%R` cell to use it.
+--------------------------------------------------------------------------------
+```r
+SOMATIC_GONAD_MARKERS <- list(
+  favourites             = c("GATA4", "NR5A1", "FOXL2", "WNT6", "KITLG", "NR5A1-CO", "FOXL2-CO"),
+  CE                     = c("UPK3B", "LRRN4", "MSLN", "PODXL", "LHX2"),
+  first_wave             = c("TAC1", "PAX8", "TBX1"),
+  bipotential_progenitor = c("LHX9", "EMX2", "WT1", "KRT19", "NR5A1"),
+  gran1                  = c("WNT6", "KITLG", "NR1H4", "FOXL2", "IRX3", "IRX5", "PROCR", "MET", "FYB2", "PRR15", "GIPC2", "KRT222", "PDE8B", "CRYM", "DLGAP1", "GALNT17", "HES1", "CYSTM1", "RALYL"),
+  gran2                  = c("ASTL", "ANGPTL6", "BMP2", "ALDH1A1", "ESR1", "CAV1", "KCNE3", "SORL1", "ALOX5", "LRRC7", "GREB1", "DAB1", "PROK1", "COL4A3", "COL4A4"),
+  gran3                  = c("PCDH8", "LIPH", "SERPIND1", "CLEC4M", "PEAR1", "NOTCH3", "HEYL", "IL33", "SGIP1", "TM4SF1", "HRH1", "ADGRG1", "NOTCH1", "NRARP", "HEY2", "HEY1", "CABLES1"),
+  stromal_cells          = c("POSTN", "SPARCL1", "ADAMTS4", "COL1A1", "COL3A1", "COL6A1", "CDH11", "PDGFRA", "COL1A2"),
+  follicle_stroma        = c("NLRP13", "PADI6", "NLRP4", "OOSP2", "HABP2", "ZAR1"),
+  pre_theca              = c("CYP17A1", "REN", "CYP11A1", "STAR", "FDX1", "VCAM1", "INHA", "DLK1"),
+  mesonephros            = c("TCF21", "COL1A1", "POSTN", "SULT1E1", "GATA2", "ALX1", "EMCN", "ADH1B"),
+  testis                 = c("SOX9", "AMH", "HR", "SOX10", "TRIM55", "PRND", "THEMIS2"),
+  smooth_muscle          = c("ACTA2", "TAGLN"),
+  adrenal                = c("CYP11B1", "CYP21A2", "LRRC39", "MC2R", "CLRN1", "SULT2A1"),
+  kidney                 = c("HOXA6", "HOXA9", "HOXC10", "SIX1", "FOXC2"),
+  urogenital_ducts       = c("EYA1", "CLDN5", "CLIC5", "AFP", "AMN", "CUBN", "HNF1A", "HNF4G", "PANTR1", "MAL", "TFAP2A", "WNT9B", "WNT7A"),
+  ECM                    = c("LAMA1", "LAMA4", "LAMA5", "LAMB1", "LAMC1", "NPNT", "COL4A1", "COL4A2"),
+  steroid_hormone        = c("FSHR", "LHCGR", "ESR1", "ESR2", "AR", "CYP11A1", "CYP17A1", "CYP19A1", "HSD3B1", "HSD3B2", "HSD17B3", "STAR"),
+  proliferation          = c("MKI67", "AURKA", "TOP2A", "PCNA", "CDK1"),
+  epithelial_rogue       = c("GDF15", "FXYD3", "ELF3", "CLDN7", "TSPAN8", "SPINK1", "MACC1", "FOXQ1", "POF1B", "EDN1"),
+  stromal_rogue          = c("NNMT", "LUM", "FGF7", "EGFL6", "FLT1", "COL15A1", "CTHRC1", "HAND2", "IGFBP3", "TIMP1", "CXCL14"),
+  neural_rogue           = c("PTH2", "LMO1", "CES1", "FOLR1", "POU3F1", "ECEL1", "CRHR2", "RBFOX3")
+)
+```
+
+--------------------------------------------------------------------------------
+PANEL SET 2 — pluripotency states & germ-cell development
+(iPSC/naive/formative/primed/totipotent/ICM, primitive streak, germ-cell stages S0–S4,
+epigenetic regulators, and common in-vitro "rogue" off-target lineages). Paste this
+`list(...)` directly into a `%%R` cell to use it.
+--------------------------------------------------------------------------------
+```r
+PLURIPOTENCY_GERM_MARKERS <- list(
+  iPSC_genes              = c("POU5F1", "NANOG", "SOX2", "FOXD3", "PODXL", "ST3GAL2", "ZIC2", "ZIC5", "SOX11", "ESRP1"),
+  naive                   = c("ESRRB", "PRDM14", "DUSP1", "TFE3", "DPPA3", "DPPA5", "GATA6", "IL6ST", "KLF2", "KLF4", "KLF5", "KLF17", "TBX3", "CD7", "ST6GAL1", "A4GALT", "TFCP2L1", "SOX2"),
+  formative               = c("SALL2", "OTX2", "ETV4", "UTF1", "ZSCAN10"),
+  primed                  = c("PITX2", "LEFTY1", "LIN28A", "ZIC1", "SOX6", "CD24", "SFRP2"),
+  sex                     = c("XIST", "XACT", "RPS4Y1"),
+  totipotent              = c("ZSCAN4", "H3.Y", "KLF17", "DUX4", "TRIM48", "TRIM49"),
+  icm                     = c("TDGF1", "PRDM14", "FGF4", "GDF3", "ETV1", "CXCL12", "KHDC3L", "MEG3"),
+  primitive_streak        = c("TBXT", "MIXL1", "EOMES", "NODAL"),
+  S0_S1                   = c("NANOS3", "TFAP2C", "SOX17", "PRDM1", "POU5F1", "NANOG", "MKI67", "TCL1A", "DPPA5", "ALPG", "MEG3", "CD38", "KIT", "DPPA3", "GTSF1", "ITGA6"),
+  S2a                     = c("DDX4", "DAZL", "ZGLP1", "ANHX"),                    # oogonia, not RA-responsive
+  S2b                     = c("REC8", "STRA8", "AAMDC", "CDKN2D", "CPE", "DERL3", "RBP4"),  # oogonia, RA-responsive
+  S3                      = c("ANKRD31", "ATP6AP1", "C14orf39", "C5orf58", "CCDC73", "DMRTC2", "FAM9C", "LY6K", "MEIOC", "SPO11", "SPATA22", "SYCP1", "SYCP3", "SYCE3"),  # meiotic initiation
+  S4                      = c("FIGLA", "SOHLH1", "ZP3", "NLRP5", "UNC13C", "FAM167A-AS1", "OOSP2", "TUBB8", "LINC02303", "KPNA7", "LMOD3"),  # oocyte, primordial follicle
+  DNAme                   = c("DNMT3A", "DNMT3B", "DNMT3L", "DNMT1", "TET1", "TET2", "TET3"),
+  PRC                     = c("EZH1", "EZH2", "EED", "SUZ12", "SETDB1", "KDM6A", "JARID2", "MGA", "MAX", "E2F6"),
+  Ectoderm_rogue          = c("LMO1", "HESX1", "FGFBP3", "POU3F1", "SIX3"),
+  Neural_tube_rogue       = c("EMX2", "LHX2", "RAX"),
+  Forebrain_placode_rogue = c("SIX1", "FOXC1"),
+  Trophoblast_rogue       = c("KRT7", "ISL1", "GATA3", "TCIM", "GABRP", "TINAGL1", "SPNS2"),
+  Neural_rogue            = c("L1CAM", "NES", "GDF15", "POU3F1"),
+  Neural_ecto             = c("LIX1", "PRTG", "CDH2", "SOX5"),
+  Syncytiotrophoblast_rogue = c("CGA", "PGF", "HOPX", "MUC15"),
+  Early_mesoderm_rogue    = c("MESP2", "GSC", "TBX6", "LHX1", "CER1", "WNT5A"),
+  Stromal_rogue           = c("HAND2", "RSPO2", "FOXF1"),
+  Endoderm_rogue          = c("FOXA2", "FGB", "FOXQ1", "APOB", "FOXP2", "CUBN")
+  # Reporters: dataset-specific reporter transgenes — add them per-run if the line carries them.
+)
+```
+================================================================================

@@ -21,10 +21,184 @@ AVAILABLE_PACKAGES = "monocle3, SingleCellExperiment, Matrix, ggplot2"
 # (system arm64 R crashes on an arch mismatch). Override via env if registered elsewhere.
 CELLVOYAGER_KERNEL_NAME = os.environ.get("CELLVOYAGER_KERNEL_NAME", "cellvoyager-r")
 
+# Max seconds to wait for the kernel to emit the NEXT iopub message during a cell
+# run. The timer resets on every message, so a long-but-progressing cell is fine;
+# this only fires when the kernel goes silent — almost always a hung R call (e.g.
+# order_cells dropping into its interactive root picker headless). On timeout we
+# interrupt the kernel and mark the cell FAILED so the fix loop engages, rather
+# than silently returning success with no output. Override via env if needed.
+KERNEL_MSG_TIMEOUT = int(os.environ.get("CELLVOYAGER_KERNEL_MSG_TIMEOUT", "600"))
+
+# R sourced into the kernel at setup time. Shadows monocle3::order_cells in the
+# global env so an unqualified order_cells(cds) call can NEVER drop into the
+# interactive Shiny root-picker (which blocks the headless kernel forever). When
+# no root is supplied, auto-pick the densest principal-graph node — the standard
+# monocle3 get_earliest_principal_node() pattern — and otherwise pass straight
+# through, so behaviour is identical whenever the model does supply a root.
+# Plain (non-f) string: the R `{ }` braces must stay literal.
+R_ORDER_CELLS_GUARD = r'''
+.cv_auto_root <- function(cds, reduction_method = "UMAP") {
+  tryCatch({
+    cv <- cds@principal_graph_aux[[reduction_method]]$pr_graph_cell_proj_closest_vertex
+    cv <- as.matrix(cv[colnames(cds), ])
+    igraph::V(monocle3::principal_graph(cds)[[reduction_method]])$name[
+      as.numeric(names(which.max(table(cv[, 1]))))]
+  }, error = function(e) {
+    igraph::V(monocle3::principal_graph(cds)[[reduction_method]])$name[1]
+  })
+}
+order_cells <- function(cds, reduction_method = "UMAP",
+                        root_pr_nodes = NULL, root_cells = NULL, ...) {
+  if (is.null(root_pr_nodes) && is.null(root_cells)) {
+    root_pr_nodes <- .cv_auto_root(cds, reduction_method)
+    message(sprintf(paste0("[CellVoyager] order_cells() called with no root; ",
+      "auto-selected root_pr_nodes='%s' (densest principal-graph node). ",
+      "Pass root_cells/root_pr_nodes to choose a biological root."), root_pr_nodes))
+  }
+  monocle3::order_cells(cds, reduction_method = reduction_method,
+                        root_pr_nodes = root_pr_nodes, root_cells = root_cells, ...)
+}
+'''
+
 
 def strip_code_markers(text):
     """Remove ```r, ```python and ``` fences from code blocks."""
     return re.sub(r"```r|```R|```python|```", "", text)
+
+
+def ensure_r_cell_magic(code):
+    """Prefix generated monocle3 R with the rpy2 `%%R` cell magic.
+
+    The model writes R, but a bare notebook cell runs in the Python kernel — so
+    raw R (e.g. `cds <- ...`) executes as Python and dies with a SyntaxError.
+    The `%%R` cell magic must be the very first line of the cell, so we lstrip
+    first. Idempotent: code that already opens with `%%R` (including the
+    `%%R -i/-o` variants) is left as-is apart from leading whitespace.
+    """
+    stripped = (code or "").lstrip()
+    if stripped.startswith("%%R"):
+        return stripped
+    return "%%R\n" + stripped
+
+
+# Patterns that signal the model is fabricating data instead of computing it from the
+# real in-memory `cds`. Mocked cells silently produce fake findings that look real and
+# invalidate the whole run, so we reject them BEFORE execution and route them into the
+# fix loop with an explanatory error. Patterns are high-precision: legitimate uses of
+# set.seed()/rnorm()/sample() (e.g. random reference gene sets) are intentionally NOT
+# flagged on their own — only the unambiguous fabrication signatures below.
+_FABRICATION_PATTERNS = [
+    (re.compile(r"\brsparsematrix\b", re.I), "rsparsematrix() — manufacturing an expression matrix"),
+    (re.compile(r"\bnew_cell_data_set\b", re.I), "new_cell_data_set() — building a fake cds (the real cds is already loaded)"),
+    (re.compile(r"(?<![\w.])mock(?![\w])", re.I), 'the word "mock" — mock data'),
+    (re.compile(r"\bdummy\b", re.I), 'the word "dummy" — dummy data'),
+    (re.compile(r"\bplaceholder\b", re.I), 'the word "placeholder" — placeholder data'),
+    (re.compile(r"\bsynthetic\b", re.I), 'the word "synthetic" — synthetic data'),
+    (re.compile(r"for demonstration", re.I), '"for demonstration" — demonstration data'),
+    (re.compile(r"in a real workflow", re.I), '"in a real workflow" — isolation scaffolding'),
+    (re.compile(r"runnable in isolation", re.I), '"runnable in isolation" — isolation scaffolding'),
+    (re.compile(r"if\s*\(\s*!\s*exists\s*\(", re.I), "if (!exists(...)) — defensive scaffolding that fabricates a missing object (cells share one R session; earlier objects already exist)"),
+]
+
+
+def detect_fabricated_data(code):
+    """Return an error string if `code` appears to fabricate/mock data, else None.
+
+    Mock/dummy/synthetic data produces plausible-but-fake results that the
+    interpreter then reports as real findings, silently invalidating the run. We
+    treat any such cell as a failure so it goes through the normal fix loop.
+    """
+    if not code:
+        return None
+    hits = []
+    for pattern, label in _FABRICATION_PATTERNS:
+        if pattern.search(code):
+            hits.append(label)
+    if not hits:
+        return None
+    return (
+        "FabricatedDataRejected: this cell was blocked before running because it "
+        "appears to fabricate/mock data instead of computing results from the real "
+        "in-memory `cds`. Detected: " + "; ".join(hits) + ". "
+        "Rewrite it to use the real objects: every %%R cell shares one R session, so "
+        "objects created in earlier cells (cds_sub, gene_module_df, marker tables, ...) "
+        "already exist and must be used directly. If a required object is genuinely "
+        "missing, compute it for real with the actual monocle3 call (find_gene_modules, "
+        "fit_models, top_markers, graph_test, ...); if that is impossible, print a clear "
+        "message saying what is missing. NEVER invent expression matrices, modules, DE "
+        "results, scores, or annotations."
+    )
+
+
+# Re-embedding is forbidden everywhere in this pipeline: the provided cds is already
+# fully processed (PCA/UMAP/alignment), and a subset RETAINS those coordinates, so
+# recomputing them destroys consistency with the annotated dataset and the paper. We
+# block these calls before execution and route them into the fix loop. NOTE: cluster_cells
+# is intentionally NOT here — re-clustering a subset is allowed (it yields the partitions
+# learn_graph needs while still reusing the existing embedding).
+_REPROCESS_PATTERNS = [
+    (re.compile(r"\bpreprocess_cds\s*\(", re.I), "preprocess_cds() — recomputing PCA"),
+    (re.compile(r"\breduce_dimension\s*\(", re.I), "reduce_dimension() — recomputing UMAP"),
+    (re.compile(r"\balign_cds\s*\(", re.I), "align_cds() — recomputing batch alignment"),
+]
+
+
+_PROGRESS_BAR_RE = re.compile(r"\|[=\s\-|]*\|?\s*\d+\s*%|\d+\s*%,?\s*ETA")
+
+
+def strip_progress_bars(text):
+    """Remove monocle3/pbmcapply progress-bar noise from captured stream text.
+
+    Long-running R calls (graph_test, fit_models) emit hundreds of carriage-return
+    progress updates like '  |====   |  30%, ETA 00:12'. They bloat the notebook and the
+    VLM's input without adding information. We drop any \\r-separated segment that is a
+    progress bar; real text on the same stream is preserved.
+    """
+    if not text:
+        return text
+    kept = []
+    for line in text.split("\n"):
+        # Progress bars redraw a single line via carriage returns; the meaningful
+        # content of a redrawn line is the final \r-segment. Drop it only if that
+        # segment is itself a progress bar, so real text sharing the chunk survives.
+        seg = line.split("\r")[-1]
+        if _PROGRESS_BAR_RE.search(seg):
+            continue
+        kept.append(seg)
+    # Trim leading/trailing blank lines introduced by dropped bars; keep interior ones.
+    while kept and not kept[0].strip():
+        kept.pop(0)
+    while kept and not kept[-1].strip():
+        kept.pop()
+    return "\n".join(kept)
+
+
+def detect_reprocessing(code):
+    """Return an error string if `code` re-embeds the data, else None.
+
+    The cds (and any subset of it) already carries PCA/UMAP/Aligned; recomputing them
+    is the 'reprocessing an already-processed dataset' bug. cluster_cells is allowed.
+    """
+    if not code:
+        return None
+    # Strip R comments (# to end of line) so explanatory prose that merely NAMES these
+    # functions (e.g. "# not re-running reduce_dimension") doesn't trip the guard — only
+    # an actual call site does. Crude hex-color mangling in strings is harmless here.
+    code_no_comments = re.sub(r"#.*", "", code)
+    hits = [label for pattern, label in _REPROCESS_PATTERNS if pattern.search(code_no_comments)]
+    if not hits:
+        return None
+    return (
+        "ReprocessingRejected: this cell was blocked before running because it "
+        "recomputes the embedding, which is forbidden. Detected: " + "; ".join(hits) + ". "
+        "The in-memory `cds` is already fully processed and a subset RETAINS the parent's "
+        "PCA/UMAP/alignment and cell-type annotations (cds[, cells] keeps reducedDims for "
+        "those cells). Do NOT call preprocess_cds / reduce_dimension / align_cds on the full "
+        "object OR on a subset. Reuse the existing embedding: reducedDim(cds_sub, 'UMAP'), "
+        "clusters(cds_sub), colData(cds_sub)$<annotation>. You MAY call cluster_cells(cds_sub) "
+        "to (re)compute clusters/partitions for learn_graph — then go straight to "
+        "learn_graph(cds_sub) and order_cells(cds_sub, root_pr_nodes=...)."
+    )
 
 
 class IdeaExecutor:
@@ -258,6 +432,9 @@ class IdeaExecutor:
         {truncated_error}
 
         Provide only the fixed code with no explanation. Keep it R run through monocle3 inside a `%%R` cell, reusing the in-memory `cds` cell_data_set; do NOT rewrite it as Python/scanpy.
+        ⛔ NEVER fix an error by fabricating data: do NOT add mock/dummy/placeholder/synthetic data, rsparsematrix/new_cell_data_set/matrix(rnorm(...)), or `if (!exists(x)) {{...create x...}}` scaffolding. Cells share one R session, so objects from earlier cells already exist — use them. If an object is genuinely missing, compute it for real (find_gene_modules, fit_models, top_markers, graph_test, ...). If the error is an empty subset, re-check the colData column name and exact category values with table(colData(cds)$<col>) and assert stopifnot(ncol(cds_sub) > 0) — do not relax thresholds or invent data.
+        ⛔ NEVER re-embed: do NOT call preprocess_cds / reduce_dimension / align_cds on the cds OR any subset — the data is already processed and subsets RETAIN the parent's PCA/UMAP/annotations. Reuse reducedDim(cds_sub,'UMAP') and existing annotations. cluster_cells(cds_sub) IS allowed (for partitions); then learn_graph(cds_sub) → order_cells(cds_sub, root_pr_nodes=...).
+        ⛔ SIMPLIFY, don't pile on. Prefer the SMALLEST possible change that addresses the actual error. REMOVE defensive scaffolding (existence checks, gene-ID remapping, try/fallback branches, manual reimplementations of monocle3 functions) rather than adding more — most errors here come from over-complication, not from missing guards. Note gene plumbing: result tables from graph_test/top_markers/coefficient_table are indexed by the SAME rownames as the cds, so subset directly (cds[row.names(subset(res, q_value<0.05)), ]); never match genes via gene_short_name. Pass the cds (not a bare matrix) to rowData()/exprs()/colData(). Use aggregate_gene_expression() for module/score aggregation, not colMeans(exprs()).
         You can only use the following R packages: {AVAILABLE_PACKAGES}
 
         Here is previous code/context (if any):
@@ -490,14 +667,45 @@ class IdeaExecutor:
             raise ValueError("No code cells found in notebook.")
 
         code = last_code_cell.source
+
+        # Reject fabricated/mock data BEFORE running it. Only applies to %%R analysis
+        # cells (the setup cell is Python and never matches). A blocked cell is recorded
+        # as an error so it flows into the standard fix loop with a corrective message.
+        if str(code).lstrip().startswith("%%R"):
+            for ename, static_error in (
+                ("FabricatedDataRejected", detect_fabricated_data(code)),
+                ("ReprocessingRejected", detect_reprocessing(code)),
+            ):
+                if static_error:
+                    code_cell_index = nb.cells.index(last_code_cell)
+                    nb.cells[code_cell_index].outputs = [
+                        new_output(
+                            output_type="error",
+                            ename=ename,
+                            evalue=static_error,
+                            traceback=[static_error],
+                        )
+                    ]
+                    return False, static_error, nb
+
         msg_id = self.kernel_client.execute(code)
         outputs = []
+        timed_out = False
 
         while True:
             try:
-                msg = self.kernel_client.get_iopub_msg(timeout=300)
+                msg = self.kernel_client.get_iopub_msg(timeout=KERNEL_MSG_TIMEOUT)
             except Exception:
+                # No message for KERNEL_MSG_TIMEOUT seconds: the kernel is hung
+                # (or dead). Stop waiting and handle it as a failure below.
+                timed_out = True
                 break
+
+            # Ignore messages from any other execution FIRST — a stale `idle`
+            # still draining from a previous (e.g. interrupted) cell must not end
+            # our wait early, or every subsequent cell captures nothing.
+            if msg["parent_header"].get("msg_id") != msg_id:
+                continue
 
             msg_type = msg["msg_type"]
             content = msg["content"]
@@ -505,13 +713,12 @@ class IdeaExecutor:
             if msg_type == "status" and content.get("execution_state") == "idle":
                 break
 
-            if msg["parent_header"].get("msg_id") != msg_id:
-                continue
-
             if msg_type == "stream":
-                outputs.append(
-                    new_output(output_type="stream", name=content["name"], text=content["text"])
-                )
+                cleaned = strip_progress_bars(content["text"])
+                if cleaned:
+                    outputs.append(
+                        new_output(output_type="stream", name=content["name"], text=cleaned)
+                    )
             elif msg_type == "execute_result":
                 outputs.append(
                     new_output(
@@ -539,6 +746,40 @@ class IdeaExecutor:
                 )
 
         code_cell_index = nb.cells.index(last_code_cell)
+
+        if timed_out:
+            # Interrupt the hung execution so it does not wedge every later cell
+            # behind it (queued executions never start while the kernel is busy).
+            try:
+                if self.kernel_manager is not None:
+                    self.kernel_manager.interrupt_kernel()
+            except Exception as e:
+                print(f"⚠️ Failed to interrupt hung kernel: {e}")
+            error_msg = (
+                f"KernelTimeout: kernel produced no output for {KERNEL_MSG_TIMEOUT}s and was "
+                f"interrupted. This usually means a hung or runaway R call. The common causes: "
+                f"(1) a heavy whole-object computation — most often fit_models() or graph_test() "
+                f"run on the FULL cds (all genes/cells); subset to a candidate gene set (e.g. "
+                f"top_markers, HVGs, or chromosome/pathway genes) and/or relevant cells BEFORE "
+                f"the call, or use top_markers() for fast group DE instead of fit_models(); "
+                f"(2) learn_graph() on too many cells/partitions (tens of thousands of cells) — "
+                f"run trajectory on a focused, biologically continuous subset of a few thousand "
+                f"cells, not a stitched-together set of disjoint populations; "
+                f"(3) order_cells() dropping into its interactive root picker (always pass "
+                f"root_pr_nodes/root_cells). Try a smaller, non-blocking approach — do NOT just "
+                f"re-run the same whole-object call."
+            )
+            outputs.append(
+                new_output(
+                    output_type="error",
+                    ename="KernelTimeout",
+                    evalue=error_msg,
+                    traceback=[error_msg],
+                )
+            )
+            nb.cells[code_cell_index].outputs = outputs
+            return False, error_msg, nb
+
         nb.cells[code_cell_index].outputs = outputs
 
         for output in outputs:
@@ -552,6 +793,11 @@ class IdeaExecutor:
         notebook = nbf.v4.new_notebook()
         notebook.cells.append(nbf.v4.new_markdown_cell(f"# Analysis\n\n**Hypothesis**: {hypothesis}"))
 
+        # Inserted as a value so the R guard's literal { } braces are never seen
+        # by the f-string formatter. No triple-quotes appear inside the R, so the
+        # r\"\"\"...\"\"\" wrapper is safe.
+        guard_pyline = 'ro.r(r"""' + R_ORDER_CELLS_GUARD + '""")'
+
         setup_code = f"""# Bridge to R via rpy2; the `%%R` cell magic shares one embedded R process,
 # so `cds` defined here is visible to every later %%R cell.
 %load_ext rpy2.ipython
@@ -563,6 +809,8 @@ warnings.filterwarnings('ignore')
 # Load data (Monocle3 cell_data_set). dim(cds) is [genes, cells].
 print("Loading data...")
 ro.r('library(monocle3)')
+# Guardrail: order_cells() can never block on the interactive root picker.
+{guard_pyline}
 ro.r('cds <- readRDS("{self.rds_path}")')
 _dims = ro.r('dim(cds)')
 print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
@@ -713,7 +961,7 @@ print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
             notebook.cells.append(nbf.v4.new_markdown_cell(f"## {analysis['code_description']}"))
 
         current_code = strip_code_markers(current_code)
-        notebook.cells.append(new_code_cell(current_code))
+        notebook.cells.append(new_code_cell(ensure_r_cell_magic(current_code)))
         self.save_notebook_snapshot(notebook, analysis_idx, 0, "setup")
 
         for iteration in range(self.max_iterations):
@@ -770,7 +1018,7 @@ print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
                         analysis_idx=analysis_idx + 1, step=step_idx, attempt=fix_attempt,
                     )
                     current_code = strip_code_markers(current_code)
-                    notebook.cells[-1] = nbf.v4.new_code_cell(current_code)
+                    notebook.cells[-1] = nbf.v4.new_code_cell(ensure_r_cell_magic(current_code))
 
                     success, error_msg, notebook = self.run_last_cell(notebook)
                     self.save_notebook_snapshot(
@@ -916,7 +1164,7 @@ print(f"Data loaded: {{int(_dims[1])}} cells and {{int(_dims[0])}} genes")
                 code_description = modified_analysis["code_description"]
                 notebook.cells.append(nbf.v4.new_markdown_cell(f"## {code_description}"))
                 modified_code = strip_code_markers(modified_analysis["first_step_code"])
-                notebook.cells.append(new_code_cell(modified_code))
+                notebook.cells.append(new_code_cell(ensure_r_cell_magic(modified_code)))
                 current_code = modified_code
                 self.save_notebook_snapshot(notebook, analysis_idx, step_idx, "after_planning")
 
